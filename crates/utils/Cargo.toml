@@ -1,0 +1,8 @@
+[package]
+name = "asmbl-utils"
+version = "0.1.0"
+authors = ["gsr"]
+edition = "2018"
+
+[dependencies]
+failure = "0.1.6"

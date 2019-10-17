@@ -1,0 +1,11 @@
+[package]
+name = "asmbl-lua-frontend"
+version = "0.1.0"
+authors = ["gsr"]
+edition = "2018"
+
+[dependencies]
+failure = "0.1.6"
+asmbl-core = { path = "../../crates/core" }
+asmbl-utils = { path = "../../crates/utils" }
+rlua = "0.16.3"

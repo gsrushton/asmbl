@@ -1,0 +1,9 @@
+# Docs https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[workspace]
+members = [
+  "crates/cli",
+  "crates/core",
+  "crates/lua-frontend",
+  "crates/utils"
+]
