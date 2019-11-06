@@ -1,7 +1,7 @@
 pub mod io {
     use std::fs;
 
-    pub fn read_file(file: fs::File) -> Result<String, failure::Error> {
+    pub fn read_file(file: fs::File) -> Result<String, std::io::Error> {
         use std::io::Read;
         let mut buffered_reader = std::io::BufReader::new(file);
         let mut contents = String::new();

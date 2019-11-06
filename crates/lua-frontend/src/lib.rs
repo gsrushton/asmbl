@@ -21,6 +21,12 @@ impl From<rlua::Error> for ScriptError {
     }
 }
 
+impl Into<core::ParseUnitError> for ScriptError {
+    fn into(self) -> core::ParseUnitError {
+        core::ParseUnitError::Other(failure::Error::from(self))
+    }
+}
+
 impl std::fmt::Display for ScriptError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self.underlying)
@@ -98,14 +104,10 @@ impl<'lua> rlua::FromLua<'lua> for PrerequisiteSpec {
     fn from_lua(v: rlua::Value<'lua>, _: rlua::Context<'lua>) -> rlua::Result<Self> {
         match v {
             rlua::Value::String(s) => Ok(Self {
-                inner: core::PrerequisiteSpec::Named(rc::Rc::from(path::Path::new(
-                    s.to_str()?,
-                ))),
+                inner: core::PrerequisiteSpec::Named(rc::Rc::from(path::Path::new(s.to_str()?))),
             }),
             rlua::Value::UserData(u) => Ok(Self {
-                inner: core::PrerequisiteSpec::Handle(
-                    u.borrow::<TaskSpecHandle>()?.clone().into(),
-                ),
+                inner: core::PrerequisiteSpec::Handle(u.borrow::<TaskSpecHandle>()?.clone().into()),
             }),
             _ => Err(rlua::Error::FromLuaConversionError {
                 from: type_name(&v),
@@ -172,7 +174,7 @@ impl<'lua> Sequence<'lua> {
 }
 
 impl core::FrontEnd for FrontEnd {
-    fn parse_unit(&self, path: &path::Path) -> Result<core::Unit, failure::Error> {
+    fn parse_unit(&self, path: &path::Path) -> Result<core::Unit, core::ParseUnitError> {
         let script = utils::io::read_file(fs::File::open(path)?)?;
 
         self.lua.context(|ctx| {
@@ -196,14 +198,12 @@ impl core::FrontEnd for FrontEnd {
                             };
 
                             let run = match args.get::<_, Option<rlua::Value>>("run")? {
-                                Some(rlua::Value::Table(t)) => {
-                                    core::Recipe::extract(t.sequence_values().collect::<Result<Vec<_>, _>>()?)
-                                        .map_err(|err| make_lua_error(err))?
-                                }
-                                Some(rlua::Value::String(s)) => {
-                                    core::Recipe::parse(s.to_str()?)
-                                        .map_err(|err| make_lua_error(err))?
-                                }
+                                Some(rlua::Value::Table(t)) => core::Recipe::extract(
+                                    t.sequence_values().collect::<Result<Vec<_>, _>>()?,
+                                )
+                                .map_err(|err| make_lua_error(err))?,
+                                Some(rlua::Value::String(s)) => core::Recipe::parse(s.to_str()?)
+                                    .map_err(|err| make_lua_error(err))?,
                                 Some(v) => {
                                     return Err(rlua::Error::FromLuaConversionError {
                                         from: type_name(&v),
@@ -244,7 +244,8 @@ impl core::FrontEnd for FrontEnd {
                     .exec()?;
 
                 Ok(())
-            })?;
+            })
+            .map_err(|err| -> core::ParseUnitError { err.into() })?;
 
             Ok(unit)
         })

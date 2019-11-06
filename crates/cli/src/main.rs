@@ -1,35 +1,8 @@
-use std::{env, fs, path};
+use std::{env, path};
 
 use failure::Error;
 
 use asmbl_core as core;
-use asmbl_utils as utils;
-
-#[derive(Debug, failure::Fail)]
-enum ProjectLoadError {
-    #[fail(display = "Unable to find project definition.")]
-    NoSuchProject,
-}
-
-fn find_project(dir: &path::Path) -> Result<(path::PathBuf, core::ProjectConfig), Error> {
-    match fs::File::open(dir.join("asmbl.toml")) {
-        Ok(file) => Ok((
-            dir.to_path_buf(),
-            toml::from_str(&utils::io::read_file(file)?)?,
-        )),
-        Err(err) => {
-            if err.kind() == std::io::ErrorKind::NotFound {
-                if let Some(parent) = dir.parent() {
-                    find_project(parent)
-                } else {
-                    Err(Error::from(ProjectLoadError::NoSuchProject))
-                }
-            } else {
-                Err(Error::from(err))
-            }
-        }
-    }
-}
 
 fn run() -> Result<(), Error> {
     let args = clap::App::new("asmbl")
@@ -46,18 +19,16 @@ fn run() -> Result<(), Error> {
         )
         .get_matches();
 
-    let context = args.value_of("context").map(|s| path::Path::new(s));
-
-    let (dir, config) = if let Some(context) = context {
-        find_project(&context)?
-    } else {
-        find_project(&env::current_dir()?)?
-    };
+    let context = args
+        .value_of("context")
+        .map_or_else(|| env::current_dir(), |s| Ok(path::PathBuf::from(s)))?;
 
     let mut engine = core::Engine::new();
     engine.register_frontend("lua", asmbl_lua_frontend::FrontEnd::new());
 
-    let tasks = engine.gather_tasks(dir, config)?;
+    let units = engine.gather_units(&context)?;
+
+    let tasks = core::TaskList::new(units);
 
     for (_handle, task) in tasks.retain_out_of_date()? {
         let mut cmd = task.prepare()?;

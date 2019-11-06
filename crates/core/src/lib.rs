@@ -1,10 +1,7 @@
-
 #[macro_use]
 extern crate lazy_static;
 
 use std::{collections, ffi, fs, path, rc, time::SystemTime};
-
-use failure::Error;
 
 mod scheduling;
 
@@ -59,21 +56,21 @@ impl Recipe {
 
         let target = target.to_str().ok_or(CakeError::NonUnicodePath)?;
 
-        let inputs = inputs.iter().map(|input| {
-            input.to_str().ok_or(CakeError::NonUnicodePath)
-        }).collect::<Result<Vec<_>, CakeError>>()?.join(" ");
+        let inputs = inputs
+            .iter()
+            .map(|input| input.to_str().ok_or(CakeError::NonUnicodePath))
+            .collect::<Result<Vec<_>, CakeError>>()?
+            .join(" ");
 
         let mut cmd = std::process::Command::new(&self.cmd);
-        cmd.env_clear()
-            .args(self.args.iter().map(|arg| {
-                RE.replace_all(&arg, |caps: &Captures| {
-                    match caps[1].as_ref() {
-                        "target" => target.to_owned(),
-                        "inputs" => inputs.clone(),
-                        _ => caps[1].to_owned(),
-                    }
-                }).into_owned()
-            }));
+        cmd.env_clear().args(self.args.iter().map(|arg| {
+            RE.replace_all(&arg, |caps: &Captures| match caps[1].as_ref() {
+                "target" => target.to_owned(),
+                "inputs" => inputs.clone(),
+                _ => caps[1].to_owned(),
+            })
+            .into_owned()
+        }));
         Ok(cmd)
     }
 }
@@ -207,13 +204,6 @@ impl Unit {
     }
 }
 
-// Project
-
-#[derive(serde::Deserialize)]
-pub struct ProjectConfig {
-    root: String,
-}
-
 #[derive(Debug, failure::Fail)]
 pub enum CakeError {
     #[fail(display = "I/O error {:?}.", 0)]
@@ -226,7 +216,7 @@ pub enum CakeError {
     )]
     NoLastModifiedTime(path::PathBuf, #[fail(cause)] std::io::Error),
     #[fail(display = "Unable to convert path to unicode.")]
-    NonUnicodePath
+    NonUnicodePath,
 }
 
 #[derive(Debug)]
@@ -399,78 +389,80 @@ impl TaskList {
 
         let mut modification_times: Vec<Option<SystemTime>> = Vec::with_capacity(self.tasks.len());
 
-        self
-            .tasks
+        self.tasks
             .iter()
             .enumerate()
-            .filter_map(|(index, task)| -> Option<Result<(TaskHandle, &Task), CakeError>> {
-                let upstream_mod_time = task
-                    .upstream
-                    .iter()
-                    .filter_map(|prerequisite| {
-                        let modified_time = |file: &path::Path| -> Result<SystemTime, CakeError> {
-                            Ok(fs::metadata(file)
-                                .map_err(|err| {
-                                    CakeError::PrerequisiteMissing(file.to_path_buf(), err)
-                                })?
-                                .modified()
-                                .map_err(|err| {
-                                    CakeError::NoLastModifiedTime(file.to_path_buf(), err)
-                                })?)
-                        };
-                        match prerequisite {
-                            Prerequisite::Named(file) => Some(modified_time(&file)),
-                            Prerequisite::Handle(handle) => {
-                                modification_times[handle.index].map(|time| Ok(time))
+            .filter_map(
+                |(index, task)| -> Option<Result<(TaskHandle, &Task), CakeError>> {
+                    let upstream_mod_time = task
+                        .upstream
+                        .iter()
+                        .filter_map(|prerequisite| {
+                            let modified_time =
+                                |file: &path::Path| -> Result<SystemTime, CakeError> {
+                                    Ok(fs::metadata(file)
+                                        .map_err(|err| {
+                                            CakeError::PrerequisiteMissing(file.to_path_buf(), err)
+                                        })?
+                                        .modified()
+                                        .map_err(|err| {
+                                            CakeError::NoLastModifiedTime(file.to_path_buf(), err)
+                                        })?)
+                                };
+                            match prerequisite {
+                                Prerequisite::Named(file) => Some(modified_time(&file)),
+                                Prerequisite::Handle(handle) => {
+                                    modification_times[handle.index].map(|time| Ok(time))
+                                }
+                            }
+                        })
+                        .try_fold(None, |r, t| -> Result<Option<SystemTime>, CakeError> {
+                            let t = t?;
+                            Ok(Some(if let Some(r) = r {
+                                std::cmp::max(t, r)
+                            } else {
+                                t
+                            }))
+                        });
+
+                    let upstream_mod_time = match upstream_mod_time {
+                        Ok(time) => time,
+                        Err(err) => return Some(Err(err)),
+                    };
+
+                    let target_mod_time = match fs::metadata(&task.target) {
+                        Ok(md) => match md.modified() {
+                            Ok(time) => Some(time),
+                            Err(err) => {
+                                return Some(Err(CakeError::NoLastModifiedTime(
+                                    task.target.to_path_buf(),
+                                    err,
+                                )))
+                            }
+                        },
+                        Err(ref err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                        Err(err) => {
+                            return Some(Err(CakeError::IoError(task.target.to_path_buf(), err)))
+                        }
+                    };
+
+                    let (mod_time, r) = match (target_mod_time, upstream_mod_time) {
+                        (Some(target), Some(upstream)) => {
+                            if upstream > target {
+                                (Some(now), Some(Ok((TaskHandle::new(index), task))))
+                            } else {
+                                (Some(target), None)
                             }
                         }
-                    })
-                    .try_fold(None, |r, t| -> Result<Option<SystemTime>, CakeError> {
-                        let t = t?;
-                        Ok(Some(if let Some(r) = r {
-                            std::cmp::max(t, r)
-                        } else {
-                            t
-                        }))
-                    });
+                        (Some(target), None) => (Some(target), None),
+                        (None, _) => (Some(now), Some(Ok((TaskHandle::new(index), task)))),
+                    };
 
-                let upstream_mod_time = match upstream_mod_time {
-                    Ok(time) => time,
-                    Err(err) => return Some(Err(err)),
-                };
+                    modification_times.push(mod_time);
 
-                let target_mod_time = match fs::metadata(&task.target) {
-                    Ok(md) => match md.modified() {
-                        Ok(time) => Some(time),
-                        Err(err) => {
-                            return Some(Err(CakeError::NoLastModifiedTime(
-                                task.target.to_path_buf(),
-                                err,
-                            )))
-                        }
-                    },
-                    Err(ref err) if err.kind() == std::io::ErrorKind::NotFound => None,
-                    Err(err) => {
-                        return Some(Err(CakeError::IoError(task.target.to_path_buf(), err)))
-                    }
-                };
-
-                let (mod_time, r) = match (target_mod_time, upstream_mod_time) {
-                    (Some(target), Some(upstream)) => {
-                        if upstream > target {
-                            (Some(now), Some(Ok((TaskHandle::new(index), task))))
-                        } else {
-                            (Some(target), None)
-                        }
-                    }
-                    (Some(target), None) => (Some(target), None),
-                    (None, _) => (Some(now), Some(Ok((TaskHandle::new(index), task)))),
-                };
-
-                modification_times.push(mod_time);
-
-                r
-            })
+                    r
+                },
+            )
             .collect()
     }
 }
@@ -484,17 +476,39 @@ impl IntoIterator for TaskList {
     }
 }
 
+#[derive(Debug, failure::Fail)]
+pub enum ParseUnitError {
+    #[fail(display = "I/O Error while parsing unit")]
+    IoError(#[fail(cause)] std::io::Error),
+    #[fail(display = "Error while parsing unit")]
+    Other(#[fail(cause)] failure::Error),
+}
+
+impl From<std::io::Error> for ParseUnitError {
+    fn from(err: std::io::Error) -> Self {
+        Self::IoError(err)
+    }
+}
+
 pub trait FrontEnd {
-    fn parse_unit(&self, file: &path::Path) -> Result<Unit, Error>;
+    fn parse_unit(&self, file: &path::Path) -> Result<Unit, ParseUnitError>;
 }
 
 #[derive(Debug, failure::Fail)]
-pub enum UnitProcessError {
-    #[fail(
+pub enum GatherUnitsError {
+    /*#[fail(
         display = "Failed to process '{}': No front-end for '{}' files.",
         file, ext
     )]
-    NoFrontEnd { file: String, ext: String },
+    NoFrontEnd { file: String, ext: String },*/
+    #[fail(display = "Unable to find a unit in '{}'", dir)]
+    NoSuchUnit { dir: String },
+    #[fail(display = "Failed to parse '{}'", file)]
+    ParseError {
+        file: String,
+        #[fail(cause)]
+        cause: ParseUnitError,
+    },
 }
 
 pub struct Engine {
@@ -515,41 +529,57 @@ impl Engine {
         self.frontends.insert(ext.into(), Box::new(f));
     }
 
-    pub fn gather_tasks(
+    pub fn gather_units(
         &mut self,
-        dir: path::PathBuf,
-        config: ProjectConfig,
-    ) -> Result<TaskList, Error> {
-        let mut units = vec![];
-
-        self.gather_units(dir.join(&config.root), &mut units)?;
-
-        Ok(TaskList::new(units))
+        dir: &path::Path,
+    ) -> Result<Vec<(path::PathBuf, Unit)>, GatherUnitsError> {
+        Ok(vec![self.find_unit(&dir)?])
     }
 
-    fn gather_units(
-        &self,
-        file: path::PathBuf,
-        units: &mut Vec<(path::PathBuf, Unit)>,
-    ) -> Result<(), Error> {
-        let unit = self.parse_unit(&file)?;
-        units.push((file, unit));
-        Ok(())
+    fn find_unit(&self, dir: &path::Path) -> Result<(path::PathBuf, Unit), GatherUnitsError> {
+        for (ext, frontend) in self.frontends.iter() {
+            let file = dir.join("asmbl").with_extension(ext);
+            if file.exists() {
+                let unit =
+                    frontend
+                        .parse_unit(&file)
+                        .map_err(|err| GatherUnitsError::ParseError {
+                            file: file.to_string_lossy().into_owned(),
+                            cause: err,
+                        })?;
+                return Ok((file, unit));
+            }
+        }
+        Err(GatherUnitsError::NoSuchUnit {
+            dir: dir.to_string_lossy().into_owned(),
+        })
     }
 
-    fn parse_unit(&self, file: &path::Path) -> Result<Unit, Error> {
-        let ext = file.extension().unwrap_or(ffi::OsStr::new(""));
+    /*
+        fn gather_units(
+            &self,
+            file: path::PathBuf,
+            units: &mut Vec<(path::PathBuf, Unit)>,
+        ) -> Result<(), Error> {
+            let unit = self.parse_unit(&file)?;
+            units.push((file, unit));
+            Ok(())
+        }
 
-        let frontend =
-            self.frontends
-                .get(ext)
-                .ok_or(Error::from(UnitProcessError::NoFrontEnd {
-                    file: file.to_str().unwrap_or("???").into(),
-                    ext: ext.to_str().unwrap_or("???").into(),
-                }))?;
+        fn parse_unit(&self, file: &path::Path) -> Result<Unit, Error> {
+            let ext = file.extension().unwrap_or(ffi::OsStr::new(""));
 
-        Ok(frontend.parse_unit(file)?)
-    }
+            let frontend =
+                self.frontends
+                    .get(ext)
+                    .ok_or(Error::from(UnitProcessError::NoFrontEnd {
+                        file: file.to_str().unwrap_or("???").into(),
+                        ext: ext.to_str().unwrap_or("???").into(),
+                    }))?;
+
+            Ok(frontend.parse_unit(file)?)
+        }
+    */
 }
 
 #[cfg(test)]
