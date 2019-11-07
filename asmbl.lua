@@ -5,11 +5,11 @@ cargo = task {
     "PATH",
     "RUSTUP_HOME"
   },
-  run = {"cargo", "build"}
+  run = "cargo build"
 }
 
 task {
   target = "target/debug/asmbl",
   consumes = cargo,
-  run = {"strip", "${inputs}", "-o", "${target}"}
+  run = "strip ${inputs} -o ${target}"
 }

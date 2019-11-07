@@ -3,8 +3,6 @@ extern crate lazy_static;
 
 use std::{collections, ffi, fs, path, rc, time::SystemTime};
 
-mod scheduling;
-
 #[derive(Debug, failure::Fail)]
 pub enum RecipeParseError {
     #[fail(display = "Recipe string contains mis-matched quotes")]
