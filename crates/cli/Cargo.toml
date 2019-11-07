@@ -10,4 +10,3 @@ failure = "0.1.6"
 asmbl-core = { path = "../../crates/core" }
 asmbl-lua-frontend = { path = "../../crates/lua-frontend" }
 asmbl-utils = { path = "../../crates/utils" }
-toml = "0.5.3"
