@@ -11,6 +11,8 @@ pub enum RecipeParseError {
     MismatchedQuotes,
     #[fail(display = "Recipe string must contain at least the command to run")]
     NotEnoughArgs,
+    #[fail(display = "Couldn't find recipe command '{}'", 0)]
+    NoSuchCmd(String)
 }
 
 impl From<shellwords::MismatchedQuotes> for RecipeParseError {
@@ -21,19 +23,32 @@ impl From<shellwords::MismatchedQuotes> for RecipeParseError {
 
 #[derive(Debug)]
 pub struct Recipe {
-    cmd: String,
+    cmd_path: path::PathBuf,
     args: Vec<String>,
 }
 
 impl Recipe {
-    pub fn new(cmd: String, args: Vec<String>) -> Self {
-        Self { cmd, args }
+    pub fn new(cmd: &str, args: Vec<String>) -> Result<Self, RecipeParseError> {
+        let cmd_path = path::Path::new(cmd);
+
+        let cmd_path = if cmd_path.exists() {
+            Some(cmd_path.to_path_buf())
+        } else {
+            match std::env::var_os("PATH") {
+                Some(paths) => std::env::split_paths(&paths)
+                    .map(|path| path.join(cmd))
+                    .find(|path| path.exists()),
+                None => None,
+            }
+        }.ok_or_else(|| RecipeParseError::NoSuchCmd(cmd.to_owned()))?;
+
+        Ok(Self { cmd_path, args })
     }
 
     pub fn extract(args: Vec<String>) -> Result<Self, RecipeParseError> {
         if let Some((cmd, args)) = args.split_first() {
             // Think this can be done without so much cloning
-            Ok(Self::new(cmd.clone(), args.to_vec()))
+            Self::new(cmd, args.to_vec())
         } else {
             Err(RecipeParseError::NotEnoughArgs)
         }
@@ -62,7 +77,7 @@ impl Recipe {
             .collect::<Result<Vec<_>, CakeError>>()?
             .join(" ");
 
-        let mut cmd = std::process::Command::new(&self.cmd);
+        let mut cmd = std::process::Command::new(&self.cmd_path);
         cmd.env_clear().args(self.args.iter().map(|arg| {
             RE.replace_all(&arg, |caps: &Captures| match caps[1].as_ref() {
                 "target" => target.to_owned(),
