@@ -12,7 +12,7 @@ pub enum RecipeParseError {
     #[fail(display = "Recipe string must contain at least the command to run")]
     NotEnoughArgs,
     #[fail(display = "Couldn't find recipe command '{}'", 0)]
-    NoSuchCmd(String)
+    NoSuchCmd(String),
 }
 
 impl From<shellwords::MismatchedQuotes> for RecipeParseError {
@@ -40,7 +40,8 @@ impl Recipe {
                     .find(|path| path.exists()),
                 None => None,
             }
-        }.ok_or_else(|| RecipeParseError::NoSuchCmd(cmd.to_owned()))?;
+        }
+        .ok_or_else(|| RecipeParseError::NoSuchCmd(cmd.to_owned()))?;
 
         Ok(Self { cmd_path, args })
     }
@@ -62,6 +63,8 @@ impl Recipe {
         &self,
         target: &path::Path,
         inputs: &Vec<rc::Rc<path::Path>>,
+        // Wouldn't it be nice if this was a move...
+        env: &Vec<EnvSpec>,
     ) -> Result<std::process::Command, CakeError> {
         use regex::{Captures, Regex};
 
@@ -78,13 +81,22 @@ impl Recipe {
             .join(" ");
 
         let mut cmd = std::process::Command::new(&self.cmd_path);
-        cmd.env_clear().args(self.args.iter().map(|arg| {
+        cmd.args(self.args.iter().map(|arg| {
             RE.replace_all(&arg, |caps: &Captures| match caps[1].as_ref() {
                 "target" => target.to_owned(),
                 "inputs" => inputs.clone(),
                 _ => caps[1].to_owned(),
             })
             .into_owned()
+        }))
+        .env_clear()
+        .envs(env.into_iter().filter_map(|env| {
+            println!("{:?}", env);
+            let value = match &env.value {
+                EnvSpecValue::INHERIT => std::env::var_os(&env.name),
+                EnvSpecValue::DEFINE(value) => Some(ffi::OsString::from(value)),
+            };
+            value.map(|v| (env.name.clone(), v))
         }));
         Ok(cmd)
     }
@@ -101,10 +113,39 @@ pub enum PrerequisiteSpec {
     Handle(TaskSpecHandle),
 }
 
+#[derive(Debug)]
+pub enum EnvSpecValue {
+    INHERIT,
+    DEFINE(String),
+}
+
+#[derive(Debug)]
+pub struct EnvSpec {
+    name: String,
+    value: EnvSpecValue,
+}
+
+impl EnvSpec {
+    pub fn define(name: String, value: String) -> Self {
+        Self {
+            name,
+            value: EnvSpecValue::DEFINE(value),
+        }
+    }
+
+    pub fn inherit(name: String) -> Self {
+        Self {
+            name,
+            value: EnvSpecValue::INHERIT,
+        }
+    }
+}
+
 pub struct TaskSpec {
     consumes: Vec<PrerequisiteSpec>,
     depends_on: Vec<PrerequisiteSpec>,
     not_before: Vec<PrerequisiteSpec>,
+    env: Vec<EnvSpec>,
     recipe: Recipe,
 }
 
@@ -113,12 +154,14 @@ impl TaskSpec {
         consumes: Vec<PrerequisiteSpec>,
         depends_on: Vec<PrerequisiteSpec>,
         not_before: Vec<PrerequisiteSpec>,
+        env: Vec<EnvSpec>,
         recipe: Recipe,
     ) -> Self {
         Self {
             consumes,
             depends_on,
             not_before,
+            env,
             recipe: recipe,
         }
     }
@@ -141,6 +184,7 @@ impl TaskSpec {
                 .into_iter()
                 .map(resolve_prequisite)
                 .collect(),
+            env: self.env,
             recipe: self.recipe,
         }
     }
@@ -197,6 +241,7 @@ impl Unit {
         consumes: Vec<PrerequisiteSpec>,
         depends_on: Vec<PrerequisiteSpec>,
         not_before: Vec<PrerequisiteSpec>,
+        env: Vec<EnvSpec>,
         recipe: Recipe,
     ) -> Result<TaskSpecHandle, AddTaskError> {
         use std::collections::hash_map::Entry;
@@ -206,7 +251,7 @@ impl Unit {
                 let handle = TaskSpecHandle::new(self.tasks.len());
                 self.tasks.push((
                     target,
-                    TaskSpec::new(consumes, depends_on, not_before, recipe),
+                    TaskSpec::new(consumes, depends_on, not_before, env, recipe),
                 ));
                 v.insert(handle.clone());
                 Ok(handle)
@@ -240,12 +285,14 @@ pub struct Task {
     inputs: Vec<rc::Rc<path::Path>>,
     upstream: Vec<Prerequisite>,
     downstream: Vec<TaskHandle>,
+    env: Vec<EnvSpec>,
     recipe: Recipe,
 }
 
 impl Task {
+    // TODO wouldn't it be nice if the was self
     pub fn prepare(&self) -> Result<std::process::Command, CakeError> {
-        self.recipe.prepare(&self.target, &self.inputs)
+        self.recipe.prepare(&self.target, &self.inputs, &self.env)
     }
 }
 
@@ -332,7 +379,7 @@ impl TaskList {
                         .map(|prerequisite| resolve_prequisite(prerequisite)),
                 );
 
-                (file, inputs, upstream, spec.recipe)
+                (file, inputs, upstream, spec.env, spec.recipe)
             })
             .collect();
 
@@ -343,12 +390,13 @@ impl TaskList {
         let mut unordered_tasks: Vec<_> = specs
             .into_iter()
             .zip(downstreams)
-            .map(|((target, inputs, upstream, recipe), downstream)| {
+            .map(|((target, inputs, upstream, env, recipe), downstream)| {
                 Some(Task {
                     target,
                     inputs,
                     upstream,
                     downstream,
+                    env,
                     recipe,
                 })
             })

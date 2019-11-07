@@ -225,12 +225,41 @@ impl core::FrontEnd for FrontEnd {
                                 }
                             };
 
+                            let env: Vec<core::EnvSpec> = match args
+                                .get::<_, Option<rlua::Table>>("env")?
+                            {
+                                Some(t) => t
+                                    .pairs::<rlua::Value, String>()
+                                    .map(|pair| {
+                                        let (name, value) = pair?;
+                                        match name {
+                                            rlua::Value::Number(_) | rlua::Value::Integer(_) => {
+                                                Ok(core::EnvSpec::inherit(value))
+                                            }
+                                            rlua::Value::String(s) => Ok(core::EnvSpec::define(
+                                                s.to_str()?.to_string(),
+                                                value,
+                                            )),
+                                            _ => Err(rlua::Error::FromLuaConversionError {
+                                                from: type_name(&name),
+                                                to: "EnvSpecKey",
+                                                message: Some(String::from(
+                                                    "Value must be a string or number",
+                                                )),
+                                            }),
+                                        }
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()?,
+                                None => vec![],
+                            };
+
                             Ok(unit
                                 .add_task(
                                     target,
                                     make_prequisite_specs("consumes")?,
                                     make_prequisite_specs("depends_on")?,
                                     make_prequisite_specs("not_before")?,
+                                    env,
                                     run,
                                 )
                                 .map_err(|err| make_lua_error(err))?
