@@ -174,11 +174,15 @@ impl<'lua> Sequence<'lua> {
 }
 
 impl core::FrontEnd for FrontEnd {
-    fn parse_unit(&self, path: &path::Path) -> Result<core::Unit, core::ParseUnitError> {
+    fn parse_unit<'v, 'p>(
+        &self,
+        path: &path::Path,
+        unit_builder: core::UnitBuilder<'v, 'p>,
+    ) -> Result<core::Unit, core::ParseUnitError> {
         let script = utils::io::read_file(fs::File::open(path)?)?;
 
         self.lua.context(|ctx| {
-            let mut unit = core::Unit::new();
+            let unit_builder = std::cell::RefCell::new(unit_builder);
 
             ctx.scope(|scope| -> Result<(), ScriptError> {
                 ctx.globals().set(
@@ -253,9 +257,10 @@ impl core::FrontEnd for FrontEnd {
                                 None => vec![],
                             };
 
-                            Ok(unit
+                            Ok(unit_builder
+                                .borrow_mut()
                                 .add_task(
-                                    target,
+                                    path::Path::new(&target),
                                     make_prequisite_specs("consumes")?,
                                     make_prequisite_specs("depends_on")?,
                                     make_prequisite_specs("not_before")?,
@@ -268,6 +273,29 @@ impl core::FrontEnd for FrontEnd {
                     )?,
                 )?;
 
+                ctx.globals().set(
+                    "sub_unit",
+                    scope.create_function_mut(|_, arg: rlua::Value| -> Result<(), _> {
+                        match arg {
+                            rlua::Value::String(s) => {
+                                let file = s.to_str()?;
+                                unit_builder
+                                    .borrow_mut()
+                                    .add_sub_unit(path::Path::new(file), false)
+                                    .map_err(|err| make_lua_error(err))?;
+                                Ok(())
+                            }
+                            _ => Err(rlua::Error::FromLuaConversionError {
+                                from: type_name(&arg),
+                                to: "SubUnitSpec",
+                                message: Some(String::from(
+                                    "Must be a string or a table of strings",
+                                )),
+                            }),
+                        }
+                    })?,
+                )?;
+
                 ctx.load(&script)
                     .set_name(path.to_str().unwrap_or("???"))?
                     .exec()?;
@@ -276,15 +304,7 @@ impl core::FrontEnd for FrontEnd {
             })
             .map_err(|err| -> core::ParseUnitError { err.into() })?;
 
-            Ok(unit)
+            Ok(unit_builder.into_inner().unit())
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
     }
 }

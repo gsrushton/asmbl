@@ -8,6 +8,8 @@ cargo = task {
   run = "cargo build"
 }
 
+sub_unit("target/debug/asmbl-cli.d")
+
 task {
   target = "target/debug/asmbl",
   consumes = cargo,

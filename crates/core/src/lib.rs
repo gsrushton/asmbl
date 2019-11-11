@@ -89,7 +89,6 @@ impl Recipe {
         }))
         .env_clear()
         .envs(env.into_iter().filter_map(|env| {
-            println!("{:?}", env);
             let value = match &env.value {
                 EnvSpecValue::INHERIT => std::env::var_os(&env.name),
                 EnvSpecValue::DEFINE(value) => Some(ffi::OsString::from(value)),
@@ -163,29 +162,6 @@ impl TaskSpec {
             recipe: recipe,
         }
     }
-
-    fn something(self, dir: &path::Path) -> Self {
-        let resolve_prequisite = |prerequisite| match prerequisite {
-            PrerequisiteSpec::Named(name) => PrerequisiteSpec::Named(rc::Rc::from(dir.join(name))),
-            _ => prerequisite,
-        };
-
-        Self {
-            consumes: self.consumes.into_iter().map(resolve_prequisite).collect(),
-            depends_on: self
-                .depends_on
-                .into_iter()
-                .map(resolve_prequisite)
-                .collect(),
-            not_before: self
-                .not_before
-                .into_iter()
-                .map(resolve_prequisite)
-                .collect(),
-            env: self.env,
-            recipe: self.recipe,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -215,50 +191,181 @@ impl TaskSpecHandle {
 }
 
 pub struct Unit {
-    tasks: Vec<(String, TaskSpec)>,
-    task_lut: collections::HashMap<String, TaskSpecHandle>,
-}
-
-#[derive(Debug, failure::Fail)]
-pub enum AddTaskError {
-    #[fail(display = "Task for target '{}' already defined.", target)]
-    TaskAlreadyDefined { target: String },
+    tasks: Vec<(path::PathBuf, TaskSpec)>,
+    prerequisites: Vec<(path::PathBuf, path::PathBuf)>,
+    sub_units: Vec<(path::PathBuf, bool)>,
 }
 
 impl Unit {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             tasks: vec![],
-            task_lut: collections::HashMap::new(),
+            prerequisites: vec![],
+            sub_units: vec![],
         }
     }
 
     pub fn add_task(
         &mut self,
-        target: String,
+        target: path::PathBuf,
         consumes: Vec<PrerequisiteSpec>,
         depends_on: Vec<PrerequisiteSpec>,
         not_before: Vec<PrerequisiteSpec>,
         env: Vec<EnvSpec>,
         recipe: Recipe,
-    ) -> Result<TaskSpecHandle, AddTaskError> {
-        use std::collections::hash_map::Entry;
-        match self.task_lut.entry(target.clone()) {
-            Entry::Occupied(_) => Err(AddTaskError::TaskAlreadyDefined { target }),
-            Entry::Vacant(v) => {
-                let handle = TaskSpecHandle::new(self.tasks.len());
-                self.tasks.push((
-                    target,
-                    TaskSpec::new(consumes, depends_on, not_before, env, recipe),
-                ));
-                v.insert(handle.clone());
-                Ok(handle)
-            }
+    ) -> TaskSpecHandle {
+        let handle = TaskSpecHandle::new(self.tasks.len());
+        self.tasks.push((
+            target,
+            TaskSpec::new(consumes, depends_on, not_before, env, recipe),
+        ));
+        handle
+    }
+
+    pub fn add_prerequisite(&mut self, target: path::PathBuf, prerequisite: path::PathBuf) {
+        self.prerequisites.push((target, prerequisite))
+    }
+
+    pub fn add_sub_unit(&mut self, file: path::PathBuf, optional: bool) {
+        self.sub_units.push((file, optional))
+    }
+
+    pub fn decompose(
+        self,
+    ) -> (
+        Vec<(path::PathBuf, TaskSpec)>,
+        Vec<(path::PathBuf, path::PathBuf)>,
+    ) {
+        (self.tasks, self.prerequisites)
+    }
+}
+
+#[derive(Debug, failure::Fail)]
+pub enum RelativiseError {
+    #[fail(display = "File path addresses beneath root.")]
+    Underflow,
+    #[fail(display = "Path prefixes are unsupported.")]
+    PrefixUnsupported,
+}
+
+pub struct UnitBuilder<'p, 'v> {
+    context: &'v Vec<path::Component<'p>>,
+    base: path::PathBuf,
+    unit: Unit,
+}
+
+impl<'p, 'v> UnitBuilder<'p, 'v> {
+    pub fn new(context: &'v Vec<path::Component<'p>>, base: path::PathBuf) -> Self {
+        Self {
+            context,
+            base,
+            unit: Unit::new(),
         }
     }
 
-    pub fn decompose(self) -> impl ExactSizeIterator<Item = (String, TaskSpec)> {
-        self.tasks.into_iter()
+    pub fn add_task(
+        &mut self,
+        target: &path::Path,
+        consumes: Vec<PrerequisiteSpec>,
+        depends_on: Vec<PrerequisiteSpec>,
+        not_before: Vec<PrerequisiteSpec>,
+        env: Vec<EnvSpec>,
+        recipe: Recipe,
+    ) -> Result<TaskSpecHandle, RelativiseError> {
+        let target = self.relativise(&target)?;
+
+        let relativise_prequisite = |prerequisite| match prerequisite {
+            PrerequisiteSpec::Named(name) => Ok(PrerequisiteSpec::Named(rc::Rc::from(
+                self.relativise(&name)?,
+            )
+                as rc::Rc<path::Path>)),
+            _ => Ok(prerequisite),
+        };
+
+        let consumes = consumes
+            .into_iter()
+            .map(relativise_prequisite)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let depends_on = depends_on
+            .into_iter()
+            .map(relativise_prequisite)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let not_before = not_before
+            .into_iter()
+            .map(relativise_prequisite)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(self
+            .unit
+            .add_task(target, consumes, depends_on, not_before, env, recipe))
+    }
+
+    pub fn add_prerequisite(
+        &mut self,
+        target: &path::Path,
+        prerequisite: &path::Path,
+    ) -> Result<(), RelativiseError> {
+        Ok(self
+            .unit
+            .add_prerequisite(self.relativise(&target)?, self.relativise(&prerequisite)?))
+    }
+
+    pub fn add_sub_unit(
+        &mut self,
+        file: &path::Path,
+        optional: bool,
+    ) -> Result<(), RelativiseError> {
+        Ok(self.unit.add_sub_unit(self.relativise(&file)?, optional))
+    }
+
+    pub fn unit(self) -> Unit {
+        self.unit
+    }
+
+    fn relativise(&self, path: &path::Path) -> Result<path::PathBuf, RelativiseError> {
+        use std::borrow::Cow;
+
+        let abs = if path.is_absolute() {
+            Cow::Borrowed(path)
+        } else {
+            Cow::Owned(self.base.join(path))
+        };
+
+        let mut components: Vec<path::Component> = Vec::new();
+        for component in abs.components() {
+            match component {
+                path::Component::CurDir => { /*NOP*/ }
+                path::Component::ParentDir => {
+                    if let None = components.pop() {
+                        return Err(RelativiseError::Underflow);
+                    }
+                }
+                _ => components.push(component),
+            }
+        }
+
+        let mut shared_component_index: usize = 0;
+        while shared_component_index < std::cmp::min(components.len(), self.context.len())
+            && components[shared_component_index] == self.context[shared_component_index]
+        {
+            shared_component_index += 1;
+        }
+
+        let mut path = path::PathBuf::new();
+
+        // Walk backwards until we match with context..
+        for _ in shared_component_index..self.context.len() {
+            path.push("..");
+        }
+
+        // Walk forwards building the rest of the path...
+        for c in shared_component_index..components.len() {
+            path.push(components[c]);
+        }
+
+        Ok(path)
     }
 }
 
@@ -294,53 +401,64 @@ impl Task {
     }
 }
 
+#[derive(Debug)]
 pub struct TaskList {
     tasks: Vec<Task>,
 }
 
 impl TaskList {
-    pub fn new(units: Vec<(path::PathBuf, Unit)>) -> Self {
+    pub fn new(units: Vec<Unit>) -> Self {
         // Extract the list of tasks from each unit,
         // flattening them into one big list.
-        let specs: Vec<_> = units
+        let (specs, prerequisites): (Vec<_>, Vec<_>) =
+            units.into_iter().map(|unit| unit.decompose()).unzip();
+
+        let (targets, mut specs): (Vec<_>, Vec<_>) = specs
             .into_iter()
-            .map(|(file, unit)| {
-                let dir = file.parent().unwrap().to_path_buf();
-                unit.decompose().map(move |(target, spec)| {
-                    (
-                        rc::Rc::from(dir.join(target)) as rc::Rc<path::Path>,
-                        spec.something(&dir),
-                    )
-                })
-            })
             .scan(0, |count, it| {
                 let offset = *count;
                 *count += it.len();
-                Some(it.map(move |(file, spec)| (file, spec, offset)))
+                Some(it.into_iter().map(move |(target, spec)| {
+                    (rc::Rc::from(target) as rc::Rc<path::Path>, (spec, offset))
+                }))
             })
             .flatten()
-            .collect();
+            .unzip();
 
         // Build a flat list of files and a map from
         // file-path to index within that list.
-        let (files, task_lut): (Vec<_>, collections::HashMap<_, _>) = specs
+        let target_lut: collections::HashMap<_, _> = targets
             .iter()
             .enumerate()
-            .map(|(index, (file, ..))| (file.clone(), (file.clone(), index)))
-            .unzip();
+            .map(|(index, target)| (target, index))
+            .collect();
+
+        // Account for any extra prerequisites.
+        for (target, prerequisite) in prerequisites.into_iter().flatten() {
+            let target = rc::Rc::from(target);
+            match target_lut.get(&target) {
+                Some(index) => {
+                    specs[*index]
+                        .0
+                        .depends_on
+                        .push(PrerequisiteSpec::Named(rc::Rc::from(prerequisite)));
+                }
+                _ => {}
+            }
+        }
 
         let mut downstreams = vec![Vec::<TaskHandle>::new(); specs.len()];
 
         let specs: Vec<_> = specs
             .into_iter()
             .enumerate()
-            .map(|(s, (file, spec, offset))| {
+            .map(|(s, (spec, offset))| {
                 let mut resolve_prequisite = |prerequisite| {
                     let prerequisite = match prerequisite {
                         PrerequisiteSpec::Handle(handle) => {
                             Prerequisite::Handle(handle.resolve(offset))
                         }
-                        PrerequisiteSpec::Named(name) => match task_lut.get(&name) {
+                        PrerequisiteSpec::Named(name) => match target_lut.get(&name) {
                             Some(index) => Prerequisite::Handle(TaskHandle::new(*index)),
                             None => Prerequisite::Named(name),
                         },
@@ -358,7 +476,7 @@ impl TaskList {
                         let prerequisite = resolve_prequisite(prerequisite);
                         (
                             match &prerequisite {
-                                Prerequisite::Handle(handle) => files[handle.index].clone(),
+                                Prerequisite::Handle(handle) => targets[handle.index].clone(),
                                 Prerequisite::Named(path) => path.clone(),
                             },
                             prerequisite,
@@ -377,12 +495,12 @@ impl TaskList {
                         .map(|prerequisite| resolve_prequisite(prerequisite)),
                 );
 
-                (file, inputs, upstream, spec.env, spec.recipe)
+                (targets[s].clone(), inputs, upstream, spec.env, spec.recipe)
             })
             .collect();
 
-        drop(task_lut);
-        drop(files);
+        drop(target_lut);
+        drop(targets);
 
         // Combine each task spec with it's corresponding list of downstreams.
         let mut unordered_tasks: Vec<_> = specs
@@ -539,10 +657,18 @@ impl IntoIterator for TaskList {
 
 #[derive(Debug, failure::Fail)]
 pub enum ParseUnitError {
+    #[fail(display = "Failed to relativise a path")]
+    RelativiseError(#[fail(cause)] RelativiseError),
     #[fail(display = "I/O Error while parsing unit")]
     IoError(#[fail(cause)] std::io::Error),
     #[fail(display = "Error while parsing unit")]
     Other(#[fail(cause)] failure::Error),
+}
+
+impl From<RelativiseError> for ParseUnitError {
+    fn from(err: RelativiseError) -> Self {
+        Self::RelativiseError(err)
+    }
 }
 
 impl From<std::io::Error> for ParseUnitError {
@@ -551,19 +677,29 @@ impl From<std::io::Error> for ParseUnitError {
     }
 }
 
+impl From<failure::Error> for ParseUnitError {
+    fn from(err: failure::Error) -> Self {
+        Self::Other(failure::Error::from(err))
+    }
+}
+
 pub trait FrontEnd {
-    fn parse_unit(&self, file: &path::Path) -> Result<Unit, ParseUnitError>;
+    fn parse_unit<'v, 'p>(
+        &self,
+        file: &path::Path,
+        unit_builder: UnitBuilder<'v, 'p>,
+    ) -> Result<Unit, ParseUnitError>;
 }
 
 #[derive(Debug, failure::Fail)]
 pub enum GatherUnitsError {
-    /*#[fail(
+    #[fail(
         display = "Failed to process '{}': No front-end for '{}' files.",
         file, ext
     )]
-    NoFrontEnd { file: String, ext: String },*/
-    #[fail(display = "Unable to find a unit in '{}'", dir)]
-    NoSuchUnit { dir: String },
+    NoFrontEnd { file: String, ext: String },
+    #[fail(display = "Unable to find a unit")]
+    NoSuchUnit,
     #[fail(display = "Failed to parse '{}'", file)]
     ParseError {
         file: String,
@@ -590,63 +726,63 @@ impl Engine {
         self.frontends.insert(ext.into(), Box::new(f));
     }
 
-    pub fn gather_units(
-        &mut self,
-        dir: &path::Path,
-    ) -> Result<Vec<(path::PathBuf, Unit)>, GatherUnitsError> {
-        Ok(vec![self.find_unit(&dir)?])
-    }
-
-    fn find_unit(&self, dir: &path::Path) -> Result<(path::PathBuf, Unit), GatherUnitsError> {
+    pub fn gather_units(&self, context: &path::Path) -> Result<Vec<Unit>, GatherUnitsError> {
         for (ext, frontend) in self.frontends.iter() {
-            let file = dir.join("asmbl").with_extension(ext);
+            let file = context.join("asmbl").with_extension(ext);
             if file.exists() {
-                let unit =
-                    frontend
-                        .parse_unit(&file)
-                        .map_err(|err| GatherUnitsError::ParseError {
-                            file: file.to_string_lossy().into_owned(),
-                            cause: err,
-                        })?;
-                return Ok((file, unit));
+                let mut units = vec![];
+                let context: Vec<_> = context.components().collect();
+                self.parse_unit(&context, &file, frontend, &mut units)?;
+                return Ok(units);
             }
         }
-        Err(GatherUnitsError::NoSuchUnit {
-            dir: dir.to_string_lossy().into_owned(),
-        })
+        Err(GatherUnitsError::NoSuchUnit)
     }
 
-    /*
-        fn gather_units(
-            &self,
-            file: path::PathBuf,
-            units: &mut Vec<(path::PathBuf, Unit)>,
-        ) -> Result<(), Error> {
-            let unit = self.parse_unit(&file)?;
-            units.push((file, unit));
-            Ok(())
+    fn parse_unit<'v, 'p>(
+        &self,
+        context: &'v Vec<path::Component<'p>>,
+        file: &path::Path,
+        frontend: &Box<dyn FrontEnd>,
+        units: &mut Vec<Unit>,
+    ) -> Result<(), GatherUnitsError> {
+        // FIXME Do better than unwrap!!!
+        let unit_builder = UnitBuilder::new(context, file.parent().unwrap().to_path_buf());
+
+        let unit = frontend.parse_unit(&file, unit_builder).map_err(|err| {
+            GatherUnitsError::ParseError {
+                file: file.to_string_lossy().into_owned(),
+                cause: err,
+            }
+        })?;
+
+        for (file, _optional) in unit.sub_units.iter() {
+            self.load_unit(context, &file, units)?;
         }
 
-        fn parse_unit(&self, file: &path::Path) -> Result<Unit, Error> {
-            let ext = file.extension().unwrap_or(ffi::OsStr::new(""));
+        units.push(unit);
 
-            let frontend =
-                self.frontends
-                    .get(ext)
-                    .ok_or(Error::from(UnitProcessError::NoFrontEnd {
-                        file: file.to_str().unwrap_or("???").into(),
-                        ext: ext.to_str().unwrap_or("???").into(),
-                    }))?;
+        Ok(())
+    }
 
-            Ok(frontend.parse_unit(file)?)
-        }
-    */
-}
+    fn load_unit<'v, 'p>(
+        &self,
+        context: &'v Vec<path::Component<'p>>,
+        file: &path::Path,
+        units: &mut Vec<Unit>,
+    ) -> Result<(), GatherUnitsError> {
+        let ext = file.extension().unwrap_or(ffi::OsStr::new(""));
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
+        let frontend = self
+            .frontends
+            .get(ext)
+            .ok_or(GatherUnitsError::NoFrontEnd {
+                file: file.to_string_lossy().into_owned(),
+                ext: ext.to_string_lossy().into_owned(),
+            })?;
+
+        self.parse_unit(context, file, &frontend, units)?;
+
+        Ok(())
     }
 }

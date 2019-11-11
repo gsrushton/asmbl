@@ -5,6 +5,7 @@ members = [
   "crates/cli",
   "crates/core",
   "crates/lua-frontend",
+  "crates/make-frontend",
   "crates/utils"
 ]
 

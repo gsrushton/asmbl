@@ -1,11 +1,11 @@
 [package]
-name = "asmbl-lua-frontend"
+name = "asmbl-make-frontend"
 version = "0.1.0"
-authors = ["gsr"]
+authors = ["Graham Rushton <gsrushton@gmail.com>"]
 edition = "2018"
 
 [dependencies]
 asmbl-core = { path = "../../crates/core" }
 asmbl-utils = { path = "../../crates/utils" }
 failure = "0.1.6"
-rlua = "0.16.3"
+nom = "5"

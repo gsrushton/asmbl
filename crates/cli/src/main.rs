@@ -1,4 +1,4 @@
-use std::{env, path};
+use std::path;
 
 use failure::Error;
 
@@ -19,12 +19,14 @@ fn run() -> Result<(), Error> {
         )
         .get_matches();
 
-    let context = args
-        .value_of("context")
-        .map_or_else(|| env::current_dir(), |s| Ok(path::PathBuf::from(s)))?;
+    let context = match args.value_of("context") {
+        Some(s) => path::Path::new(s).canonicalize()?,
+        None => std::env::current_dir()?,
+    };
 
     let mut engine = core::Engine::new();
     engine.register_frontend("lua", asmbl_lua_frontend::FrontEnd::new());
+    engine.register_frontend("d", asmbl_make_frontend::FrontEnd::new());
 
     let units = engine.gather_units(&context)?;
 
