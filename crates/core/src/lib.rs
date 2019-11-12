@@ -698,14 +698,13 @@ pub trait FrontEnd {
 
 #[derive(Debug, failure::Fail)]
 pub enum GatherUnitsError {
-    #[fail(
-        display = "Failed to process '{}': No front-end for '{}' files.",
-        file, ext
-    )]
+    #[fail(display = "No such root unit")]
+    NoRootUnit,
+    #[fail(display = "Bad sub-module: '{}'.", file)]
+    BadSubModule { file: String },
+    #[fail(display = "No front-end for '{}'.", file)]
     NoFrontEnd { file: String, ext: String },
-    #[fail(display = "Unable to find a unit")]
-    NoSuchUnit,
-    #[fail(display = "Failed to parse '{}'", file)]
+    #[fail(display = "Failed to parse '{}'.", file)]
     ParseError {
         file: String,
         #[fail(cause)]
@@ -741,7 +740,7 @@ impl Engine {
                 return Ok(units);
             }
         }
-        Err(GatherUnitsError::NoSuchUnit)
+        Err(GatherUnitsError::NoRootUnit)
     }
 
     fn parse_unit<'v, 'p>(
@@ -752,8 +751,13 @@ impl Engine {
         frontend: &Box<dyn FrontEnd>,
         units: &mut Vec<Unit>,
     ) -> Result<(), GatherUnitsError> {
-        // FIXME Do better than unwrap!!!
-        let unit_builder = UnitBuilder::new(context, file.parent().unwrap().to_path_buf());
+        let dir = file
+            .parent()
+            .ok_or_else(|| GatherUnitsError::BadSubModule {
+                file: file.to_string_lossy().into_owned(),
+            })?;
+
+        let unit_builder = UnitBuilder::new(context, dir.to_path_buf());
 
         match frontend.parse_unit(&file, unit_builder) {
             Ok(unit) => {
@@ -764,16 +768,14 @@ impl Engine {
                 units.push(unit);
 
                 Ok(())
-            },
-            Err(err) => {
-                match err {
-                    ParseUnitError::NotFound if optional => Ok(()),
-                    _ => Err(GatherUnitsError::ParseError {
-                        file: file.to_string_lossy().into_owned(),
-                        cause: err,
-                    })
-                }
             }
+            Err(err) => match err {
+                ParseUnitError::NotFound if optional => Ok(()),
+                _ => Err(GatherUnitsError::ParseError {
+                    file: file.to_string_lossy().into_owned(),
+                    cause: err,
+                }),
+            },
         }
     }
 
