@@ -659,6 +659,8 @@ impl IntoIterator for TaskList {
 pub enum ParseUnitError {
     #[fail(display = "Failed to relativise a path")]
     RelativiseError(#[fail(cause)] RelativiseError),
+    #[fail(display = "Unit not found")]
+    NotFound,
     #[fail(display = "I/O Error while parsing unit")]
     IoError(#[fail(cause)] std::io::Error),
     #[fail(display = "Error while parsing unit")]
@@ -673,7 +675,10 @@ impl From<RelativiseError> for ParseUnitError {
 
 impl From<std::io::Error> for ParseUnitError {
     fn from(err: std::io::Error) -> Self {
-        Self::IoError(err)
+        match err.kind() {
+            std::io::ErrorKind::NotFound => Self::NotFound,
+            _ => Self::IoError(err),
+        }
     }
 }
 
@@ -686,7 +691,7 @@ impl From<failure::Error> for ParseUnitError {
 pub trait FrontEnd {
     fn parse_unit<'v, 'p>(
         &self,
-        file: &path::Path,
+        path: &path::Path,
         unit_builder: UnitBuilder<'v, 'p>,
     ) -> Result<Unit, ParseUnitError>;
 }
@@ -732,7 +737,7 @@ impl Engine {
             if file.exists() {
                 let mut units = vec![];
                 let context: Vec<_> = context.components().collect();
-                self.parse_unit(&context, &file, frontend, &mut units)?;
+                self.parse_unit(&context, &file, false, frontend, &mut units)?;
                 return Ok(units);
             }
         }
@@ -743,32 +748,40 @@ impl Engine {
         &self,
         context: &'v Vec<path::Component<'p>>,
         file: &path::Path,
+        optional: bool,
         frontend: &Box<dyn FrontEnd>,
         units: &mut Vec<Unit>,
     ) -> Result<(), GatherUnitsError> {
         // FIXME Do better than unwrap!!!
         let unit_builder = UnitBuilder::new(context, file.parent().unwrap().to_path_buf());
 
-        let unit = frontend.parse_unit(&file, unit_builder).map_err(|err| {
-            GatherUnitsError::ParseError {
-                file: file.to_string_lossy().into_owned(),
-                cause: err,
+        match frontend.parse_unit(&file, unit_builder) {
+            Ok(unit) => {
+                for (file, optional) in unit.sub_units.iter() {
+                    self.load_unit(context, &file, *optional, units)?;
+                }
+
+                units.push(unit);
+
+                Ok(())
+            },
+            Err(err) => {
+                match err {
+                    ParseUnitError::NotFound if optional => Ok(()),
+                    _ => Err(GatherUnitsError::ParseError {
+                        file: file.to_string_lossy().into_owned(),
+                        cause: err,
+                    })
+                }
             }
-        })?;
-
-        for (file, _optional) in unit.sub_units.iter() {
-            self.load_unit(context, &file, units)?;
         }
-
-        units.push(unit);
-
-        Ok(())
     }
 
     fn load_unit<'v, 'p>(
         &self,
         context: &'v Vec<path::Component<'p>>,
         file: &path::Path,
+        optional: bool,
         units: &mut Vec<Unit>,
     ) -> Result<(), GatherUnitsError> {
         let ext = file.extension().unwrap_or(ffi::OsStr::new(""));
@@ -781,7 +794,7 @@ impl Engine {
                 ext: ext.to_string_lossy().into_owned(),
             })?;
 
-        self.parse_unit(context, file, &frontend, units)?;
+        self.parse_unit(context, file, optional, &frontend, units)?;
 
         Ok(())
     }

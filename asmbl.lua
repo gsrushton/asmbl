@@ -8,7 +8,7 @@ cargo = task {
   run = "cargo build"
 }
 
-sub_unit("target/debug/asmbl-cli.d")
+sub_unit("target/debug/asmbl-cli.d", true)
 
 task {
   target = "target/debug/asmbl",

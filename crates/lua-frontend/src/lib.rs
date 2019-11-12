@@ -275,29 +275,34 @@ impl core::FrontEnd for FrontEnd {
 
                 ctx.globals().set(
                     "sub_unit",
-                    scope.create_function_mut(|_, arg: rlua::Value| -> Result<(), _> {
-                        match arg {
-                            rlua::Value::String(s) => {
-                                let file = s.to_str()?;
-                                unit_builder
-                                    .borrow_mut()
-                                    .add_sub_unit(path::Path::new(file), false)
-                                    .map_err(|err| make_lua_error(err))?;
-                                Ok(())
+                    scope.create_function_mut(
+                        |_, (path, optional): (rlua::Value, Option<bool>)| -> Result<(), _> {
+                            match path {
+                                rlua::Value::String(s) => {
+                                    let file = s.to_str()?;
+                                    unit_builder
+                                        .borrow_mut()
+                                        .add_sub_unit(
+                                            path::Path::new(file),
+                                            optional.unwrap_or(false),
+                                        )
+                                        .map_err(|err| make_lua_error(err))?;
+                                    Ok(())
+                                }
+                                _ => Err(rlua::Error::FromLuaConversionError {
+                                    from: type_name(&path),
+                                    to: "SubUnitSpec",
+                                    message: Some(String::from(
+                                        "Must be a string or a table of strings",
+                                    )),
+                                }),
                             }
-                            _ => Err(rlua::Error::FromLuaConversionError {
-                                from: type_name(&arg),
-                                to: "SubUnitSpec",
-                                message: Some(String::from(
-                                    "Must be a string or a table of strings",
-                                )),
-                            }),
-                        }
-                    })?,
+                        },
+                    )?,
                 )?;
 
                 ctx.load(&script)
-                    .set_name(path.to_str().unwrap_or("???"))?
+                    .set_name(path.to_string_lossy().as_ref())?
                     .exec()?;
 
                 Ok(())
