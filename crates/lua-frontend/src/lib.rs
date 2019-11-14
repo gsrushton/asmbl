@@ -74,28 +74,30 @@ impl FrontEnd {
 }
 
 #[derive(Clone)]
-struct TaskSpecHandle {
-    inner: core::TaskSpecHandle,
+struct TargetSpecHandle {
+    inner: core::TargetSpecHandle,
 }
 
-impl From<core::TaskSpecHandle> for TaskSpecHandle {
-    fn from(inner: core::TaskSpecHandle) -> Self {
+impl From<core::TargetSpecHandle> for TargetSpecHandle {
+    fn from(inner: core::TargetSpecHandle) -> Self {
         Self { inner }
     }
 }
 
-impl Into<core::TaskSpecHandle> for TaskSpecHandle {
-    fn into(self) -> core::TaskSpecHandle {
+impl Into<core::TargetSpecHandle> for TargetSpecHandle {
+    fn into(self) -> core::TargetSpecHandle {
         self.inner
     }
 }
+
+impl rlua::UserData for TargetSpecHandle {}
 
 struct PrerequisiteSpec {
     inner: core::PrerequisiteSpec,
 }
 
-impl PrerequisiteSpec {
-    fn into_core(self) -> core::PrerequisiteSpec {
+impl Into<core::PrerequisiteSpec> for PrerequisiteSpec {
+    fn into(self) -> core::PrerequisiteSpec {
         self.inner
     }
 }
@@ -107,7 +109,9 @@ impl<'lua> rlua::FromLua<'lua> for PrerequisiteSpec {
                 inner: core::PrerequisiteSpec::Named(rc::Rc::from(path::Path::new(s.to_str()?))),
             }),
             rlua::Value::UserData(u) => Ok(Self {
-                inner: core::PrerequisiteSpec::Handle(u.borrow::<TaskSpecHandle>()?.clone().into()),
+                inner: core::PrerequisiteSpec::Handle(
+                    u.borrow::<TargetSpecHandle>()?.clone().into(),
+                ),
             }),
             _ => Err(rlua::Error::FromLuaConversionError {
                 from: type_name(&v),
@@ -120,8 +124,6 @@ impl<'lua> rlua::FromLua<'lua> for PrerequisiteSpec {
         }
     }
 }
-
-impl rlua::UserData for TaskSpecHandle {}
 
 fn make_lua_error<F: failure::Fail>(fail: F) -> rlua::Error {
     rlua::Error::external(failure::Error::from(fail))
@@ -173,6 +175,91 @@ impl<'lua> Sequence<'lua> {
     }
 }
 
+struct PathBuf {
+    inner: path::PathBuf,
+}
+
+impl Into<path::PathBuf> for PathBuf {
+    fn into(self) -> path::PathBuf {
+        self.inner
+    }
+}
+
+impl<'lua> rlua::FromLua<'lua> for PathBuf {
+    fn from_lua(v: rlua::Value<'lua>, _: rlua::Context<'lua>) -> rlua::Result<Self> {
+        match v {
+            rlua::Value::String(s) => Ok(Self {
+                inner: path::PathBuf::from(s.to_str()?),
+            }),
+            _ => Err(rlua::Error::FromLuaConversionError {
+                from: type_name(&v),
+                to: "TargetsSpec",
+                message: Some(String::from(
+                    "Value must be the fully qualified name of a target \
+                     or a handle returned from the task function",
+                )),
+            }),
+        }
+    }
+}
+
+struct TargetsSpec {
+    inner: core::TargetsSpec,
+}
+
+impl Into<core::TargetsSpec> for TargetsSpec {
+    fn into(self) -> core::TargetsSpec {
+        self.inner
+    }
+}
+
+impl<'lua> rlua::FromLua<'lua> for TargetsSpec {
+    fn from_lua(v: rlua::Value<'lua>, ctx: rlua::Context<'lua>) -> rlua::Result<Self> {
+        match v {
+            rlua::Value::String(_) => Ok(Self {
+                inner: core::TargetsSpec::Single(PathBuf::from_lua(v, ctx)?.into()),
+            }),
+            rlua::Value::Table(t) => Ok(Self {
+                inner: core::TargetsSpec::Multi(
+                    t.sequence_values::<PathBuf>()
+                        .into_iter()
+                        .map(|path| path.map(|path| path.into()))
+                        .collect::<Result<Vec<_>, _>>()?,
+                ),
+            }),
+            _ => Err(rlua::Error::FromLuaConversionError {
+                from: type_name(&v),
+                to: "TargetsSpec",
+                message: Some(String::from(
+                    "Value must be the fully qualified name of a target \
+                     or a handle returned from the task function",
+                )),
+            }),
+        }
+    }
+}
+
+struct TargetSpecHandleIterator {
+    inner: core::TargetSpecHandleIterator,
+}
+
+impl From<core::TargetSpecHandleIterator> for TargetSpecHandleIterator {
+    fn from(inner: core::TargetSpecHandleIterator) -> Self {
+        Self { inner }
+    }
+}
+
+impl<'lua> rlua::ToLuaMulti<'lua> for TargetSpecHandleIterator {
+    fn to_lua_multi(self, ctx: rlua::Context<'lua>) -> Result<rlua::MultiValue<'lua>, rlua::Error> {
+        use rlua::ToLua;
+        Ok(self
+            .inner
+            .into_iter()
+            .map(|handle| TargetSpecHandle::from(handle).to_lua(ctx.clone()))
+            .collect::<Result<rlua::MultiValue<'lua>, _>>()?)
+    }
+}
+
 impl core::FrontEnd for FrontEnd {
     fn parse_unit<'v, 'p>(
         &self,
@@ -188,18 +275,19 @@ impl core::FrontEnd for FrontEnd {
                 ctx.globals().set(
                     "task",
                     scope.create_function_mut(
-                        |ctx, args: rlua::Table| -> Result<TaskSpecHandle, _> {
-                            let target: String = args.get("target")?;
-
-                            let make_prequisite_specs = |key| -> Result<
-                                Vec<core::PrerequisiteSpec>,
-                                _,
-                            > {
-                                Sequence::new(ctx.clone(), args.get(key)?)
-                                    .into_iter()
-                                    .map(|r: Result<PrerequisiteSpec, _>| r.map(|p| p.into_core()))
-                                    .collect()
+                        |ctx, args: rlua::Table| -> Result<TargetSpecHandleIterator, _> {
+                            let targets = match args.get::<_, Option<TargetsSpec>>("targets")? {
+                                Some(targets) => targets,
+                                None => args.get("target")?
                             };
+
+                            let make_prequisite_specs =
+                                |key| -> Result<Vec<core::PrerequisiteSpec>, _> {
+                                    Sequence::new(ctx.clone(), args.get(key)?)
+                                        .into_iter()
+                                        .map(|r: Result<PrerequisiteSpec, _>| r.map(|p| p.into()))
+                                        .collect()
+                                };
 
                             let run = match args.get::<_, Option<rlua::Value>>("run")? {
                                 Some(rlua::Value::Table(t)) => core::Recipe::extract(
@@ -260,7 +348,7 @@ impl core::FrontEnd for FrontEnd {
                             Ok(unit_builder
                                 .borrow_mut()
                                 .add_task(
-                                    path::Path::new(&target),
+                                    targets.into(),
                                     make_prequisite_specs("consumes")?,
                                     make_prequisite_specs("depends_on")?,
                                     make_prequisite_specs("not_before")?,
