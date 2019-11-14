@@ -250,6 +250,7 @@ pub enum RelativiseError {
 
 pub struct UnitBuilder<'p, 'v> {
     context: &'v Vec<path::Component<'p>>,
+    // FIXME This could be a reference...
     base: path::PathBuf,
     unit: Unit,
 }
@@ -407,7 +408,10 @@ pub struct TaskList {
 }
 
 impl TaskList {
-    pub fn new(units: Vec<Unit>) -> Self {
+    pub fn new<I>(prefix: &path::Path, units: I) -> Self
+    where
+        I: IntoIterator<Item = Unit>,
+    {
         // Extract the list of tasks from each unit,
         // flattening them into one big list.
         let (specs, prerequisites): (Vec<_>, Vec<_>) =
@@ -460,7 +464,7 @@ impl TaskList {
                         }
                         PrerequisiteSpec::Named(name) => match target_lut.get(&name) {
                             Some(index) => Prerequisite::Handle(TaskHandle::new(*index)),
-                            None => Prerequisite::Named(name),
+                            None => Prerequisite::Named(rc::Rc::from(prefix.join(name))),
                         },
                     };
                     if let Prerequisite::Handle(handle) = prerequisite {
@@ -474,13 +478,11 @@ impl TaskList {
                     .into_iter()
                     .map(|prerequisite| {
                         let prerequisite = resolve_prequisite(prerequisite);
-                        (
-                            match &prerequisite {
-                                Prerequisite::Handle(handle) => targets[handle.index].clone(),
-                                Prerequisite::Named(path) => path.clone(),
-                            },
-                            prerequisite,
-                        )
+                        let path = match &prerequisite {
+                            Prerequisite::Handle(handle) => targets[handle.index].clone(),
+                            Prerequisite::Named(path) => path.clone(),
+                        };
+                        (path, prerequisite)
                     })
                     .unzip();
 
@@ -700,10 +702,12 @@ pub trait FrontEnd {
 pub enum GatherUnitsError {
     #[fail(display = "No such root unit")]
     NoRootUnit,
-    #[fail(display = "Bad sub-module: '{}'.", file)]
-    BadSubModule { file: String },
+    #[fail(display = "Bad sub-unit: '{}'.", file)]
+    BadSubUnit { file: String },
     #[fail(display = "No front-end for '{}'.", file)]
     NoFrontEnd { file: String, ext: String },
+    #[fail(display = "Sub-unit '{}' not under context.", file)]
+    UnitNotInContext { file: String },
     #[fail(display = "Failed to parse '{}'.", file)]
     ParseError {
         file: String,
@@ -730,7 +734,10 @@ impl Engine {
         self.frontends.insert(ext.into(), Box::new(f));
     }
 
-    pub fn gather_units(&self, context: &path::Path) -> Result<Vec<Unit>, GatherUnitsError> {
+    pub fn gather_units(
+        &self,
+        context: &path::Path,
+    ) -> Result<Vec<(path::PathBuf, Unit)>, GatherUnitsError> {
         for (ext, frontend) in self.frontends.iter() {
             let file = context.join("asmbl").with_extension(ext);
             if file.exists() {
@@ -749,23 +756,31 @@ impl Engine {
         file: &path::Path,
         optional: bool,
         frontend: &Box<dyn FrontEnd>,
-        units: &mut Vec<Unit>,
+        units: &mut Vec<(path::PathBuf, Unit)>,
     ) -> Result<(), GatherUnitsError> {
-        let dir = file
-            .parent()
-            .ok_or_else(|| GatherUnitsError::BadSubModule {
-                file: file.to_string_lossy().into_owned(),
-            })?;
+        let dir = file.parent().ok_or_else(|| GatherUnitsError::BadSubUnit {
+            file: file.to_string_lossy().into_owned(),
+        })?;
 
         let unit_builder = UnitBuilder::new(context, dir.to_path_buf());
 
         match frontend.parse_unit(&file, unit_builder) {
             Ok(unit) => {
                 for (file, optional) in unit.sub_units.iter() {
-                    self.load_unit(context, &file, *optional, units)?;
+                    let ext = file.extension().unwrap_or(ffi::OsStr::new(""));
+
+                    let frontend = self
+                        .frontends
+                        .get(ext)
+                        .ok_or(GatherUnitsError::NoFrontEnd {
+                            file: file.to_string_lossy().into_owned(),
+                            ext: ext.to_string_lossy().into_owned(),
+                        })?;
+
+                    self.parse_unit(context, file, *optional, &frontend, units)?;
                 }
 
-                units.push(unit);
+                units.push((dir.to_path_buf(), unit));
 
                 Ok(())
             }
@@ -777,27 +792,5 @@ impl Engine {
                 }),
             },
         }
-    }
-
-    fn load_unit<'v, 'p>(
-        &self,
-        context: &'v Vec<path::Component<'p>>,
-        file: &path::Path,
-        optional: bool,
-        units: &mut Vec<Unit>,
-    ) -> Result<(), GatherUnitsError> {
-        let ext = file.extension().unwrap_or(ffi::OsStr::new(""));
-
-        let frontend = self
-            .frontends
-            .get(ext)
-            .ok_or(GatherUnitsError::NoFrontEnd {
-                file: file.to_string_lossy().into_owned(),
-                ext: ext.to_string_lossy().into_owned(),
-            })?;
-
-        self.parse_unit(context, file, optional, &frontend, units)?;
-
-        Ok(())
     }
 }

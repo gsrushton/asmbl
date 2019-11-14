@@ -1,17 +1,20 @@
 
 cargo = task {
-  target = "target/debug/asmbl-cli",
+  target = "debug/asmbl-cli",
+  consumes = "Cargo.toml",
   env = {
     "PATH",
     "RUSTUP_HOME"
   },
-  run = "cargo build"
+  run = "cargo build --manifest-path ${inputs} --target-dir ."
 }
 
-sub_unit("target/debug/asmbl-cli.d", true)
+
+
+sub_unit("debug/asmbl-cli.d", true)
 
 task {
-  target = "target/debug/asmbl",
+  target = "asmbl",
   consumes = cargo,
   run = "strip ${inputs} -o ${target}"
 }
