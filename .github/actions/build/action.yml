@@ -1,0 +1,6 @@
+name: Build
+description: Build asmbl
+runs:
+  using: docker
+  image: ../../../tools/docker/dev/Dockerfile
+  args: [asmbl, -t, /tmp]
