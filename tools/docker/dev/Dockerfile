@@ -18,7 +18,7 @@ RUN apt-get update \
     && apt-get -y install --no-install-recommends apt-utils dialog 2>&1 \
     #
     # Verify git, needed tools installed
-    && apt-get -y install git iproute2 procps lsb-release $USER_SHELL \
+    && apt-get -y install git iproute2 procps lsb-release wget $USER_SHELL \
     #
     # Install other dependencies
     && apt-get install -y lldb \
@@ -39,6 +39,11 @@ RUN apt-get update \
     && apt-get autoremove -y \
     && apt-get clean -y \
     && rm -rf /var/lib/apt/lists/*
+
+ARG ASMBL_VERSION=v0.1.0
+RUN wget -q --output-document=/usr/local/bin/asmbl \
+      https://github.com/gsrushton/asmbl/releases/download/${ASMBL_VERSION}/asmbl \
+	&& chmod +x /usr/local/bin/asmbl
 
 # Switch back to dialog for any ad-hoc use of apt-get
 ENV DEBIAN_FRONTEND=
