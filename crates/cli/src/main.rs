@@ -45,7 +45,11 @@ fn run() -> Result<(), Error> {
     };
 
     let target_dir = match args.value_of("target") {
-        Some(s) => path::Path::new(s).canonicalize()?,
+        Some(s) => {
+            let target_dir = path::Path::new(s).canonicalize()?;
+            std::env::set_current_dir(&target_dir)?;
+            target_dir
+        },
         None => std::env::current_dir()?,
     };
 

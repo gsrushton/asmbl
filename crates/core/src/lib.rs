@@ -59,9 +59,9 @@ impl Recipe {
 
     pub fn prepare(
         &self,
+        // Wouldn't it be nice if these were all moves...
         targets: &Targets,
-        inputs: &Vec<path::PathBuf>,
-        // Wouldn't it be nice if this was a move...
+        inputs: &Vec<rc::Rc<path::Path>>,
         env: &Vec<EnvSpec>,
     ) -> Result<std::process::Command, CakeError> {
         use regex::{Captures, Regex};
@@ -538,7 +538,7 @@ pub enum CakeError {
 #[derive(Debug)]
 pub struct Task {
     targets: Targets,
-    inputs: Vec<path::PathBuf>,
+    inputs: Vec<rc::Rc<path::Path>>,
     upstream: Vec<Prerequisite>,
     downstream: Vec<TaskHandle>,
     env: Vec<EnvSpec>,
@@ -615,17 +615,20 @@ impl TaskList {
             .enumerate()
             .map(|(s, (spec, offset))| {
                 let mut resolve_prequisite = |prerequisite| {
-                    let (path, prerequisite) = match prerequisite {
+                    let (prerequisite, path) = match prerequisite {
                         PrerequisiteSpec::Handle(handle) => (
-                            targets[handle.task_index][handle.target_index].to_path_buf(),
                             Prerequisite::Handle(handle.resolve(offset)),
+                            targets[handle.task_index][handle.target_index].clone(),
                         ),
                         PrerequisiteSpec::Named(name) => match target_lut.get(&name) {
                             Some((task_index, target_index)) => (
-                                targets[*task_index][*target_index].to_path_buf(),
                                 Prerequisite::Handle(TaskHandle::new(*task_index)),
+                                targets[*task_index][*target_index].clone(),
                             ),
-                            None => (prefix.join(&name), Prerequisite::Named(name)),
+                            None => {
+                                let path = rc::Rc::from(prefix.join(&name)) as rc::Rc<path::Path>;
+                                (Prerequisite::Named(path.clone()), path)
+                        },
                         },
                     };
                     if let Prerequisite::Handle(handle) = prerequisite {
