@@ -260,6 +260,37 @@ impl<'lua> rlua::ToLuaMulti<'lua> for TargetSpecHandleIterator {
     }
 }
 
+struct SubUnitSpec {
+    inner: core::SubUnitSpec,
+}
+
+impl<'lua> rlua::FromLua<'lua> for SubUnitSpec {
+    fn from_lua(v: rlua::Value<'lua>, ctx: rlua::Context<'lua>) -> rlua::Result<Self> {
+        match v {
+            rlua::Value::String(_) => Ok(Self {
+                inner: core::SubUnitSpec::Named(PathBuf::from_lua(v, ctx)?.into()),
+            }),
+            rlua::Value::UserData(_) => Ok(Self {
+                inner: core::SubUnitSpec::Target(TargetSpecHandle::from_lua(v, ctx)?.into()),
+            }),
+            _ => Err(rlua::Error::FromLuaConversionError {
+                from: type_name(&v),
+                to: "SubUnitSpec",
+                message: Some(String::from(
+                    "Value must be a path to a file or a handle returned from \
+                     the task function",
+                )),
+            }),
+        }
+    }
+}
+
+impl Into<core::SubUnitSpec> for SubUnitSpec {
+    fn into(self) -> core::SubUnitSpec {
+        self.inner
+    }
+}
+
 impl core::FrontEnd for FrontEnd {
     fn parse_unit<'v, 'p>(
         &self,
@@ -278,7 +309,7 @@ impl core::FrontEnd for FrontEnd {
                         |ctx, args: rlua::Table| -> Result<TargetSpecHandleIterator, _> {
                             let targets = match args.get::<_, Option<TargetsSpec>>("targets")? {
                                 Some(targets) => targets,
-                                None => args.get("target")?
+                                None => args.get("target")?,
                             };
 
                             let make_prequisite_specs =
@@ -364,27 +395,12 @@ impl core::FrontEnd for FrontEnd {
                 ctx.globals().set(
                     "sub_unit",
                     scope.create_function_mut(
-                        |_, (path, optional): (rlua::Value, Option<bool>)| -> Result<(), _> {
-                            match path {
-                                rlua::Value::String(s) => {
-                                    let file = s.to_str()?;
-                                    unit_builder
-                                        .borrow_mut()
-                                        .add_sub_unit(
-                                            path::Path::new(file),
-                                            optional.unwrap_or(false),
-                                        )
-                                        .map_err(|err| make_lua_error(err))?;
-                                    Ok(())
-                                }
-                                _ => Err(rlua::Error::FromLuaConversionError {
-                                    from: type_name(&path),
-                                    to: "SubUnitSpec",
-                                    message: Some(String::from(
-                                        "Must be a string or a table of strings",
-                                    )),
-                                }),
-                            }
+                        |_, sub_unit_spec: SubUnitSpec| -> Result<(), _> {
+                            unit_builder
+                                .borrow_mut()
+                                .add_sub_unit(sub_unit_spec.into())
+                                .map_err(|err| make_lua_error(err))?;
+                            Ok(())
                         },
                     )?,
                 )?;

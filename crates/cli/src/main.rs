@@ -49,11 +49,14 @@ fn run() -> Result<(), Error> {
             let target_dir = path::Path::new(s).canonicalize()?;
             std::env::set_current_dir(&target_dir)?;
             target_dir
-        },
+        }
         None => std::env::current_dir()?,
     };
 
-    let prefix = pathdiff::diff_paths(&context_dir, &target_dir)
+    let named_prerequisite_prefix = pathdiff::diff_paths(&context_dir, &target_dir)
+        .ok_or_else(|| RunError::NoRouteFromTargetToContext)?;
+
+    let named_target_prefix = pathdiff::diff_paths(&target_dir, &context_dir)
         .ok_or_else(|| RunError::NoRouteFromTargetToContext)?;
 
     let mut engine = core::Engine::new();
@@ -62,7 +65,11 @@ fn run() -> Result<(), Error> {
 
     let units = engine.gather_units(&context_dir)?;
 
-    let tasks = core::TaskList::new(&prefix, units.into_iter().map(|(_, unit)| unit));
+    let tasks = core::TaskList::new(
+        &named_target_prefix,
+        &named_prerequisite_prefix,
+        units.into_iter().map(|(_, unit)| unit),
+    );
 
     for (_handle, task) in tasks.retain_out_of_date()? {
         let mut cmd = task.prepare()?;

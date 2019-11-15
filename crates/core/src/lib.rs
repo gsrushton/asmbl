@@ -227,6 +227,18 @@ impl TargetsSpec {
     }
 }
 
+impl std::ops::Index<usize> for TargetsSpec {
+    type Output = path::Path;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        match self {
+            Self::Single(path) if index == 0 => path,
+            Self::Multi(paths) => &paths[index],
+            _ => panic!(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Targets {
     Single(rc::Rc<path::Path>),
@@ -339,10 +351,15 @@ impl Iterator for TargetSpecHandleIterator {
     }
 }
 
+pub enum SubUnitSpec {
+    Target(TargetSpecHandle),
+    Named(path::PathBuf),
+}
+
 pub struct Unit {
     tasks: Vec<(TargetsSpec, TaskSpec)>,
     prerequisites: Vec<(path::PathBuf, path::PathBuf)>,
-    sub_units: Vec<(path::PathBuf, bool)>,
+    sub_units: Vec<SubUnitSpec>,
 }
 
 impl Unit {
@@ -352,6 +369,10 @@ impl Unit {
             prerequisites: vec![],
             sub_units: vec![],
         }
+    }
+
+    pub fn target_path(&self, handle: &TargetSpecHandle) -> &path::Path {
+        &self.tasks[handle.task_index].0[handle.target_index]
     }
 
     pub fn add_task(
@@ -376,8 +397,8 @@ impl Unit {
         self.prerequisites.push((target, prerequisite))
     }
 
-    pub fn add_sub_unit(&mut self, file: path::PathBuf, optional: bool) {
-        self.sub_units.push((file, optional))
+    pub fn add_sub_unit(&mut self, sub_unit: SubUnitSpec) {
+        self.sub_units.push(sub_unit)
     }
 
     pub fn decompose(
@@ -463,12 +484,11 @@ impl<'p, 'v> UnitBuilder<'p, 'v> {
             .add_prerequisite(self.relativise(&target)?, self.relativise(&prerequisite)?))
     }
 
-    pub fn add_sub_unit(
-        &mut self,
-        file: &path::Path,
-        optional: bool,
-    ) -> Result<(), RelativiseError> {
-        Ok(self.unit.add_sub_unit(self.relativise(&file)?, optional))
+    pub fn add_sub_unit(&mut self, sub_unit: SubUnitSpec) -> Result<(), RelativiseError> {
+        Ok(self.unit.add_sub_unit(match sub_unit {
+            SubUnitSpec::Named(file) => SubUnitSpec::Named(self.relativise(&file)?),
+            _ => sub_unit,
+        }))
     }
 
     pub fn unit(self) -> Unit {
@@ -558,7 +578,11 @@ pub struct TaskList {
 }
 
 impl TaskList {
-    pub fn new<I>(prefix: &path::Path, units: I) -> Self
+    pub fn new<I>(
+        named_target_prefix: &path::Path,
+        named_prerequisite_prefix: &path::Path,
+        units: I,
+    ) -> Self
     where
         I: IntoIterator<Item = Unit>,
     {
@@ -596,7 +620,10 @@ impl TaskList {
 
         // Account for any extra prerequisites.
         for (target, prerequisite) in prerequisites.into_iter().flatten() {
-            let target = rc::Rc::from(target);
+            let target = rc::Rc::from(match target.strip_prefix(named_target_prefix) {
+                Ok(target) => target.to_path_buf(),
+                _ => target,
+            });
             match target_lut.get(&target) {
                 Some((task_index, _)) => {
                     specs[*task_index]
@@ -626,9 +653,10 @@ impl TaskList {
                                 targets[*task_index][*target_index].clone(),
                             ),
                             None => {
-                                let path = rc::Rc::from(prefix.join(&name)) as rc::Rc<path::Path>;
+                                let path = rc::Rc::from(named_prerequisite_prefix.join(&name))
+                                    as rc::Rc<path::Path>;
                                 (Prerequisite::Named(path.clone()), path)
-                            },
+                            }
                         },
                     };
                     if let Prerequisite::Handle(handle) = prerequisite {
@@ -782,21 +810,22 @@ impl TaskList {
                                 }
                             },
                             Err(ref err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                            Err(err) => {
-                                return Err(CakeError::IoError(target.to_path_buf(), err))
-                            }
+                            Err(err) => return Err(CakeError::IoError(target.to_path_buf(), err)),
                         })
-                        .try_fold(None, |r, t| -> Result<Option<Option<SystemTime>>, CakeError> {
-                            let t = t?;
-                            Ok(Some(if let Some(r) = r {
-                                match (r, t) {
-                                    (None, _) | (_, None) => None,
-                                    (Some(r), Some(t)) => Some(std::cmp::max(t, r))
-                                }
-                            } else {
-                                t
-                            }))
-                        });
+                        .try_fold(
+                            None,
+                            |r, t| -> Result<Option<Option<SystemTime>>, CakeError> {
+                                let t = t?;
+                                Ok(Some(if let Some(r) = r {
+                                    match (r, t) {
+                                        (None, _) | (_, None) => None,
+                                        (Some(r), Some(t)) => Some(std::cmp::max(t, r)),
+                                    }
+                                } else {
+                                    t
+                                }))
+                            },
+                        );
 
                     let target_mod_time = match target_mod_time {
                         Ok(time) => time.unwrap_or(None),
@@ -942,7 +971,12 @@ impl Engine {
 
         match frontend.parse_unit(&file, unit_builder) {
             Ok(unit) => {
-                for (file, optional) in unit.sub_units.iter() {
+                for sub_unit in unit.sub_units.iter() {
+                    let (file, optional): (&path::Path, _) = match sub_unit {
+                        SubUnitSpec::Target(handle) => (unit.target_path(handle), true),
+                        SubUnitSpec::Named(file) => (file, false),
+                    };
+
                     let ext = file.extension().unwrap_or(ffi::OsStr::new(""));
 
                     let frontend = self
@@ -953,7 +987,7 @@ impl Engine {
                             ext: ext.to_string_lossy().into_owned(),
                         })?;
 
-                    self.parse_unit(context, file, *optional, &frontend, units)?;
+                    self.parse_unit(context, file, optional, &frontend, units)?;
                 }
 
                 units.push((dir.to_path_buf(), unit));

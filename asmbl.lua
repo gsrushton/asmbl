@@ -1,18 +1,18 @@
 
 bin, deps = task {
   targets = {
-    "debug/asmbl-cli",
-    "debug/asmbl-cli.d"
+    "release/asmbl-cli",
+    "release/asmbl-cli.d"
   },
   consumes = "Cargo.toml",
   env = {
     "PATH",
     "RUSTUP_HOME"
   },
-  run = "cargo build --manifest-path ${inputs} --target-dir ."
+  run = "cargo build --manifest-path ${inputs} --target-dir . --release"
 }
 
-sub_unit("debug/asmbl-cli.d", true)
+sub_unit(deps)
 
 task {
   target = "asmbl",
