@@ -628,7 +628,7 @@ impl TaskList {
                             None => {
                                 let path = rc::Rc::from(prefix.join(&name)) as rc::Rc<path::Path>;
                                 (Prerequisite::Named(path.clone()), path)
-                        },
+                            },
                         },
                     };
                     if let Prerequisite::Handle(handle) = prerequisite {
@@ -771,32 +771,35 @@ impl TaskList {
                     let target_mod_time = task
                         .targets
                         .iter()
-                        .filter_map(|target| match fs::metadata(&target) {
+                        .map(|target| match fs::metadata(&target) {
                             Ok(md) => match md.modified() {
-                                Ok(time) => Some(Ok(time)),
+                                Ok(time) => Ok(Some(time)),
                                 Err(err) => {
-                                    return Some(Err(CakeError::NoLastModifiedTime(
+                                    return Err(CakeError::NoLastModifiedTime(
                                         target.to_path_buf(),
                                         err,
-                                    )))
+                                    ))
                                 }
                             },
-                            Err(ref err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                            Err(ref err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
                             Err(err) => {
-                                return Some(Err(CakeError::IoError(target.to_path_buf(), err)))
+                                return Err(CakeError::IoError(target.to_path_buf(), err))
                             }
                         })
-                        .try_fold(None, |r, t| -> Result<Option<SystemTime>, CakeError> {
+                        .try_fold(None, |r, t| -> Result<Option<Option<SystemTime>>, CakeError> {
                             let t = t?;
                             Ok(Some(if let Some(r) = r {
-                                std::cmp::min(t, r)
+                                match (r, t) {
+                                    (None, _) | (_, None) => None,
+                                    (Some(r), Some(t)) => Some(std::cmp::max(t, r))
+                                }
                             } else {
                                 t
                             }))
                         });
 
                     let target_mod_time = match target_mod_time {
-                        Ok(time) => time,
+                        Ok(time) => time.unwrap_or(None),
                         Err(err) => return Some(Err(err)),
                     };
 
