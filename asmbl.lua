@@ -9,7 +9,7 @@ bin, deps = task {
     "PATH",
     "RUSTUP_HOME"
   },
-  run = "cargo build --manifest-path ${inputs} --target-dir . --release"
+  run = "cargo build --manifest-path $< --target-dir . --release"
 }
 
 sub_unit(deps)
@@ -17,5 +17,5 @@ sub_unit(deps)
 task {
   target = "asmbl",
   consumes = bin,
-  run = "strip ${inputs} -o ${target}"
+  run = "strip $< -o $@"
 }

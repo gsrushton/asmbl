@@ -6,6 +6,4 @@ edition = "2018"
 
 [dependencies]
 failure = "0.1.6"
-lazy_static = "1.4.0"
-regex = "1"
-shellwords = "1.0.0"
+nom = "5"

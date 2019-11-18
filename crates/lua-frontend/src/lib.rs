@@ -321,7 +321,7 @@ impl core::FrontEnd for FrontEnd {
                                 };
 
                             let run = match args.get::<_, Option<rlua::Value>>("run")? {
-                                Some(rlua::Value::Table(t)) => core::Recipe::extract(
+                                Some(rlua::Value::Table(t)) => core::Recipe::new(
                                     t.sequence_values().collect::<Result<Vec<_>, _>>()?,
                                 )
                                 .map_err(|err| make_lua_error(err))?,

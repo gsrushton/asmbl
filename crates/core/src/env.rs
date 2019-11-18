@@ -1,5 +1,3 @@
-
-
 #[derive(Debug)]
 pub enum EnvSpecValue {
     INHERIT,
@@ -28,10 +26,10 @@ impl EnvSpec {
     }
 
     pub fn name(&self) -> &str {
-      &self.name
+        &self.name
     }
 
     pub fn value(&self) -> &EnvSpecValue {
-      &self.value
+        &self.value
     }
 }

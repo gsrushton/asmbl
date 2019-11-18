@@ -1,6 +1,3 @@
-#[macro_use]
-extern crate lazy_static;
-
 use std::{collections, ffi, fs, path, rc, time::SystemTime};
 
 mod env;
@@ -8,11 +5,11 @@ mod recipe;
 mod targets;
 mod targets_spec;
 
-use targets::{Targets};
+use targets::Targets;
 
-pub use env::{EnvSpec};
-pub use targets_spec::{TargetsSpec};
+pub use env::EnvSpec;
 pub use recipe::Recipe;
+pub use targets_spec::TargetsSpec;
 
 #[derive(Debug)]
 enum Prerequisite {
