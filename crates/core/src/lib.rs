@@ -3,105 +3,16 @@ extern crate lazy_static;
 
 use std::{collections, ffi, fs, path, rc, time::SystemTime};
 
-#[derive(Debug, failure::Fail)]
-pub enum RecipeParseError {
-    #[fail(display = "Recipe string contains mis-matched quotes")]
-    MismatchedQuotes,
-    #[fail(display = "Recipe string must contain at least the command to run")]
-    NotEnoughArgs,
-    #[fail(display = "Couldn't find recipe command '{}'", 0)]
-    NoSuchCmd(String),
-}
+mod env;
+mod recipe;
+mod targets;
+mod targets_spec;
 
-impl From<shellwords::MismatchedQuotes> for RecipeParseError {
-    fn from(_: shellwords::MismatchedQuotes) -> Self {
-        Self::MismatchedQuotes
-    }
-}
+use targets::{Targets};
 
-#[derive(Debug)]
-pub struct Recipe {
-    cmd_path: path::PathBuf,
-    args: Vec<String>,
-}
-
-impl Recipe {
-    pub fn new(cmd: &str, args: Vec<String>) -> Result<Self, RecipeParseError> {
-        let cmd_path = path::Path::new(cmd);
-
-        let cmd_path = if cmd_path.exists() {
-            Some(cmd_path.to_path_buf())
-        } else {
-            match std::env::var_os("PATH") {
-                Some(paths) => std::env::split_paths(&paths)
-                    .map(|path| path.join(cmd))
-                    .find(|path| path.exists()),
-                None => None,
-            }
-        }
-        .ok_or_else(|| RecipeParseError::NoSuchCmd(cmd.to_owned()))?;
-
-        Ok(Self { cmd_path, args })
-    }
-
-    pub fn extract(args: Vec<String>) -> Result<Self, RecipeParseError> {
-        if let Some((cmd, args)) = args.split_first() {
-            // Think this can be done without so much cloning
-            Self::new(cmd, args.to_vec())
-        } else {
-            Err(RecipeParseError::NotEnoughArgs)
-        }
-    }
-
-    pub fn parse(s: &str) -> Result<Self, RecipeParseError> {
-        Self::extract(shellwords::split(s)?)
-    }
-
-    pub fn prepare(
-        &self,
-        // Wouldn't it be nice if these were all moves...
-        targets: &Targets,
-        inputs: &Vec<rc::Rc<path::Path>>,
-        env: &Vec<EnvSpec>,
-    ) -> Result<std::process::Command, CakeError> {
-        use regex::{Captures, Regex};
-
-        lazy_static! {
-            static ref RE: Regex = Regex::new(r"\$\{(\w+)\}").unwrap();
-        }
-
-        let target = targets
-            .iter()
-            .map(|path| path.to_str().ok_or(CakeError::NonUnicodePath))
-            .collect::<Result<Vec<_>, CakeError>>()?
-            .join(" ");
-
-        let inputs = inputs
-            .iter()
-            .map(|input| input.to_str().ok_or(CakeError::NonUnicodePath))
-            .collect::<Result<Vec<_>, CakeError>>()?
-            .join(" ");
-
-        let mut cmd = std::process::Command::new(&self.cmd_path);
-        cmd.args(self.args.iter().map(|arg| {
-            RE.replace_all(&arg, |caps: &Captures| match caps[1].as_ref() {
-                "target" => target.clone(),
-                "inputs" => inputs.clone(),
-                _ => caps[1].to_owned(),
-            })
-            .into_owned()
-        }))
-        .env_clear()
-        .envs(env.into_iter().filter_map(|env| {
-            let value = match &env.value {
-                EnvSpecValue::INHERIT => std::env::var_os(&env.name),
-                EnvSpecValue::DEFINE(value) => Some(ffi::OsString::from(value)),
-            };
-            value.map(|v| (env.name.clone(), v))
-        }));
-        Ok(cmd)
-    }
-}
+pub use env::{EnvSpec};
+pub use targets_spec::{TargetsSpec};
+pub use recipe::Recipe;
 
 #[derive(Debug)]
 enum Prerequisite {
@@ -112,34 +23,6 @@ enum Prerequisite {
 pub enum PrerequisiteSpec {
     Named(rc::Rc<path::Path>),
     Handle(TargetSpecHandle),
-}
-
-#[derive(Debug)]
-pub enum EnvSpecValue {
-    INHERIT,
-    DEFINE(String),
-}
-
-#[derive(Debug)]
-pub struct EnvSpec {
-    name: String,
-    value: EnvSpecValue,
-}
-
-impl EnvSpec {
-    pub fn define(name: String, value: String) -> Self {
-        Self {
-            name,
-            value: EnvSpecValue::DEFINE(value),
-        }
-    }
-
-    pub fn inherit(name: String) -> Self {
-        Self {
-            name,
-            value: EnvSpecValue::INHERIT,
-        }
-    }
 }
 
 pub struct TaskSpec {
@@ -195,129 +78,6 @@ impl TargetSpecHandle {
 
     fn resolve(self, task_offset: usize) -> TaskHandle {
         TaskHandle::new(self.task_index + task_offset)
-    }
-}
-
-pub enum TargetsSpec {
-    Single(path::PathBuf),
-    Multi(Vec<path::PathBuf>),
-}
-
-impl TargetsSpec {
-    pub fn len(&self) -> usize {
-        match self {
-            Self::Single(_) => 1,
-            Self::Multi(targets) => targets.len(),
-        }
-    }
-
-    pub fn map<F, E>(self, mut f: F) -> Result<Self, E>
-    where
-        F: FnMut(path::PathBuf) -> Result<path::PathBuf, E>,
-    {
-        Ok(match self {
-            Self::Single(path) => Self::Single(f(path)?),
-            Self::Multi(paths) => Self::Multi(
-                paths
-                    .into_iter()
-                    .map(|path| f(path))
-                    .collect::<Result<Vec<_>, E>>()?,
-            ),
-        })
-    }
-}
-
-impl std::ops::Index<usize> for TargetsSpec {
-    type Output = path::Path;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        match self {
-            Self::Single(path) if index == 0 => path,
-            Self::Multi(paths) => &paths[index],
-            _ => panic!(),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum Targets {
-    Single(rc::Rc<path::Path>),
-    Multi(Vec<rc::Rc<path::Path>>),
-}
-
-impl Targets {
-    pub fn iter(&self) -> TargetIterator {
-        match self {
-            Self::Single(path) => TargetIterator::Single(Some(path)),
-            Self::Multi(paths) => TargetIterator::Multi(paths.iter()),
-        }
-    }
-}
-
-impl std::ops::Index<usize> for Targets {
-    type Output = rc::Rc<path::Path>;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        match self {
-            Self::Single(path) if index == 0 => path,
-            Self::Multi(paths) => &paths[index],
-            _ => panic!(),
-        }
-    }
-}
-
-impl From<TargetsSpec> for Targets {
-    fn from(spec: TargetsSpec) -> Self {
-        match spec {
-            TargetsSpec::Single(path) => Self::Single(rc::Rc::from(path)),
-            TargetsSpec::Multi(paths) => {
-                Self::Multi(paths.into_iter().map(|path| rc::Rc::from(path)).collect())
-            }
-        }
-    }
-}
-
-impl IntoIterator for Targets {
-    type Item = rc::Rc<path::Path>;
-    type IntoIter = TargetIntoIterator;
-
-    fn into_iter(self) -> Self::IntoIter {
-        match self {
-            Self::Single(path) => TargetIntoIterator::Single(Some(path)),
-            Self::Multi(paths) => TargetIntoIterator::Multi(paths.into_iter()),
-        }
-    }
-}
-
-pub enum TargetIterator<'a> {
-    Single(Option<&'a rc::Rc<path::Path>>),
-    Multi(std::slice::Iter<'a, rc::Rc<path::Path>>),
-}
-
-impl<'a> Iterator for TargetIterator<'a> {
-    type Item = &'a rc::Rc<path::Path>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::Single(path) => path.take(),
-            Self::Multi(iter) => iter.next(),
-        }
-    }
-}
-
-pub enum TargetIntoIterator {
-    Single(Option<rc::Rc<path::Path>>),
-    Multi(std::vec::IntoIter<rc::Rc<path::Path>>),
-}
-
-impl Iterator for TargetIntoIterator {
-    type Item = rc::Rc<path::Path>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::Single(path) => path.take(),
-            Self::Multi(iter) => iter.next(),
-        }
     }
 }
 
@@ -567,7 +327,7 @@ pub struct Task {
 
 impl Task {
     // TODO wouldn't it be nice if the was self
-    pub fn prepare(&self) -> Result<std::process::Command, CakeError> {
+    pub fn prepare(&self) -> Result<std::process::Command, recipe::RecipePrepareError> {
         self.recipe.prepare(&self.targets, &self.inputs, &self.env)
     }
 }
