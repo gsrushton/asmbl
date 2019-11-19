@@ -1,19 +1,19 @@
 
 a = task {
   target = "whoop",
-  run = "touch ${target}"
+  run = "touch $@"
 }
 
 b = task {
   target = "fun!",
   consumes = {"cake"},
   not_before = {a},
-  run = {"/bin/bash", "-c", "cat ${inputs} > ${target}"}
+  run = {"/bin/bash", "-c", "cat $< > $@"}
 }
 
 c = task {
   target = "cheese",
   depends_on = {a},
   not_before = {b},
-  run = "touch ${target}"
+  run = "touch $@"
 }
