@@ -335,11 +335,7 @@ pub struct TaskList {
 }
 
 impl TaskList {
-    pub fn new<I>(
-        named_target_prefix: &path::Path,
-        named_prerequisite_prefix: &path::Path,
-        units: I,
-    ) -> Self
+    pub fn new<I>(target_prefix: &path::Path, units: I) -> Self
     where
         I: IntoIterator<Item = Unit>,
     {
@@ -353,10 +349,9 @@ impl TaskList {
             .scan(0, |count, it| {
                 let offset = *count;
                 *count += it.len();
-                Some(
-                    it.into_iter()
-                        .map(move |(target, spec)| (Targets::from(target), (spec, offset))),
-                )
+                Some(it.into_iter().map(move |(target, spec)| {
+                    (Targets::from((target_prefix, target)), (spec, offset))
+                }))
             })
             .flatten()
             .unzip();
@@ -377,11 +372,7 @@ impl TaskList {
 
         // Account for any extra prerequisites.
         for (target, prerequisite) in prerequisites.into_iter().flatten() {
-            let target = rc::Rc::from(match target.strip_prefix(named_target_prefix) {
-                Ok(target) => target.to_path_buf(),
-                _ => target,
-            });
-            match target_lut.get(&target) {
+            match target_lut.get(&rc::Rc::from(target)) {
                 Some((task_index, _)) => {
                     specs[*task_index]
                         .0
@@ -410,8 +401,7 @@ impl TaskList {
                                 targets[*task_index][*target_index].clone(),
                             ),
                             None => {
-                                let path = rc::Rc::from(named_prerequisite_prefix.join(&name))
-                                    as rc::Rc<path::Path>;
+                                let path = rc::Rc::from(name) as rc::Rc<path::Path>;
                                 (Prerequisite::Named(path.clone()), path)
                             }
                         },
@@ -698,14 +688,23 @@ impl Engine {
 
     pub fn gather_units(
         &self,
-        context: &path::Path,
+        dir: &path::Path,
+        target_prefix: &path::Path,
     ) -> Result<Vec<(path::PathBuf, Unit)>, GatherUnitsError> {
         for (ext, frontend) in self.frontends.iter() {
-            let file = context.join("asmbl").with_extension(ext);
+            let file = dir.join("asmbl").with_extension(ext);
             if file.exists() {
                 let mut units = vec![];
-                let context: Vec<_> = context.components().collect();
-                self.parse_unit(&context, &file, false, frontend, &mut units)?;
+                let context: Vec<_> = dir.components().collect();
+                self.parse_unit(
+                    &context,
+                    target_prefix,
+                    dir,
+                    &file,
+                    false,
+                    frontend,
+                    &mut units,
+                )?;
                 return Ok(units);
             }
         }
@@ -715,23 +714,24 @@ impl Engine {
     fn parse_unit<'v, 'p>(
         &self,
         context: &'v Vec<path::Component<'p>>,
+        target_prefix: &path::Path,
+        dir: &path::Path,
         file: &path::Path,
         optional: bool,
         frontend: &Box<dyn FrontEnd>,
         units: &mut Vec<(path::PathBuf, Unit)>,
     ) -> Result<(), GatherUnitsError> {
-        let dir = file.parent().ok_or_else(|| GatherUnitsError::BadSubUnit {
-            file: file.to_string_lossy().into_owned(),
-        })?;
-
         let unit_builder = UnitBuilder::new(context, dir.to_path_buf());
 
         match frontend.parse_unit(&file, unit_builder) {
             Ok(unit) => {
                 for sub_unit in unit.sub_units.iter() {
-                    let (file, optional): (&path::Path, _) = match sub_unit {
-                        SubUnitSpec::Target(handle) => (unit.target_path(handle), true),
-                        SubUnitSpec::Named(file) => (file, false),
+                    // TODO Could be a Cow
+                    let (file, include, optional) = match sub_unit {
+                        SubUnitSpec::Target(handle) => {
+                            (target_prefix.join(unit.target_path(handle)), true, true)
+                        }
+                        SubUnitSpec::Named(file) => (file.to_path_buf(), false, false),
                     };
 
                     let ext = file.extension().unwrap_or(ffi::OsStr::new(""));
@@ -744,7 +744,24 @@ impl Engine {
                             ext: ext.to_string_lossy().into_owned(),
                         })?;
 
-                    self.parse_unit(context, file, optional, &frontend, units)?;
+                    // TODO Could be a Cow
+                    let dir = if include {
+                        dir
+                    } else {
+                        file.parent().ok_or_else(|| GatherUnitsError::BadSubUnit {
+                            file: file.to_string_lossy().into_owned(),
+                        })?
+                    };
+
+                    self.parse_unit(
+                        context,
+                        target_prefix,
+                        dir,
+                        &file,
+                        optional,
+                        &frontend,
+                        units,
+                    )?;
                 }
 
                 units.push((dir.to_path_buf(), unit));

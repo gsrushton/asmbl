@@ -1,3 +1,3 @@
 #pragma once
 
-#define NAME "FUN"
+#define NAME "WORLD"

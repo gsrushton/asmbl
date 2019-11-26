@@ -6,8 +6,8 @@ use asmbl_core as core;
 
 #[derive(Debug, failure::Fail)]
 enum RunError {
-    #[fail(display = "No route from target to context.")]
-    NoRouteFromTargetToContext,
+    #[fail(display = "No route from context to target.")]
+    NoRouteFromContextToTarget,
 }
 
 fn run() -> Result<(), Error> {
@@ -39,41 +39,33 @@ fn run() -> Result<(), Error> {
         )
         .get_matches();
 
-    let context_dir = match args.value_of("context") {
+    let target_dir = match args.value_of("target") {
         Some(s) => path::Path::new(s).canonicalize()?,
         None => std::env::current_dir()?,
     };
 
-    let target_dir = match args.value_of("target") {
+    let context_dir = match args.value_of("context") {
         Some(s) => {
-            let target_dir = path::Path::new(s).canonicalize()?;
-            std::env::set_current_dir(&target_dir)?;
-            target_dir
+            let context_dir = path::Path::new(s).canonicalize()?;
+            std::env::set_current_dir(&context_dir)?;
+            context_dir
         }
         None => std::env::current_dir()?,
     };
 
-    let named_prerequisite_prefix = pathdiff::diff_paths(&context_dir, &target_dir)
-        .ok_or_else(|| RunError::NoRouteFromTargetToContext)?;
-
-    let named_target_prefix = pathdiff::diff_paths(&target_dir, &context_dir)
-        .ok_or_else(|| RunError::NoRouteFromTargetToContext)?;
+    let target_prefix = pathdiff::diff_paths(&target_dir, &context_dir)
+        .ok_or_else(|| RunError::NoRouteFromContextToTarget)?;
 
     let mut engine = core::Engine::new();
     engine.register_frontend("lua", asmbl_lua_frontend::FrontEnd::new());
     engine.register_frontend("d", asmbl_make_frontend::FrontEnd::new());
 
-    let units = engine.gather_units(&context_dir)?;
+    let units = engine.gather_units(&context_dir, &target_prefix)?;
 
-    let tasks = core::TaskList::new(
-        &named_target_prefix,
-        &named_prerequisite_prefix,
-        units.into_iter().map(|(_, unit)| unit),
-    );
+    let tasks = core::TaskList::new(&target_prefix, units.into_iter().map(|(_, unit)| unit));
 
     for (_handle, task) in tasks.retain_out_of_date()? {
         let mut cmd = task.prepare()?;
-        cmd.current_dir(&target_dir);
         println!("{:?}", cmd);
         cmd.spawn()?.wait()?;
     }

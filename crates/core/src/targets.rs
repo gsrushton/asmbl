@@ -29,13 +29,16 @@ impl std::ops::Index<usize> for Targets {
     }
 }
 
-impl From<TargetsSpec> for Targets {
-    fn from(spec: TargetsSpec) -> Self {
+impl From<(&path::Path, TargetsSpec)> for Targets {
+    fn from((prefix, spec): (&path::Path, TargetsSpec)) -> Self {
         match spec {
-            TargetsSpec::Single(path) => Self::Single(rc::Rc::from(path)),
-            TargetsSpec::Multi(paths) => {
-                Self::Multi(paths.into_iter().map(|path| rc::Rc::from(path)).collect())
-            }
+            TargetsSpec::Single(path) => Self::Single(rc::Rc::from(prefix.join(path))),
+            TargetsSpec::Multi(paths) => Self::Multi(
+                paths
+                    .into_iter()
+                    .map(|path| rc::Rc::from(prefix.join(path)))
+                    .collect(),
+            ),
         }
     }
 }
