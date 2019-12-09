@@ -1,6 +1,6 @@
 use std::{path, rc};
 
-use crate::targets_spec::TargetsSpec;
+use crate::targets_spec::{TargetSpec, TargetsSpec};
 
 #[derive(Clone, Debug)]
 pub enum Targets {
@@ -29,14 +29,18 @@ impl std::ops::Index<usize> for Targets {
     }
 }
 
-impl From<(&path::Path, TargetsSpec)> for Targets {
-    fn from((prefix, spec): (&path::Path, TargetsSpec)) -> Self {
+impl From<(&path::Path, &path::Path, TargetsSpec)> for Targets {
+    fn from((prefix, input, spec): (&path::Path, &path::Path, TargetsSpec)) -> Self {
+        let resolve_spec = |spec: TargetSpec| {
+            rc::Rc::from(spec.resolve(prefix, input))
+        };
+
         match spec {
-            TargetsSpec::Single(path) => Self::Single(rc::Rc::from(prefix.join(path))),
-            TargetsSpec::Multi(paths) => Self::Multi(
-                paths
+            TargetsSpec::Single(spec) => Self::Single(resolve_spec(spec)),
+            TargetsSpec::Multi(specs) => Self::Multi(
+                specs
                     .into_iter()
-                    .map(|path| rc::Rc::from(prefix.join(path)))
+                    .map(resolve_spec)
                     .collect(),
             ),
         }
