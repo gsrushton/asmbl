@@ -5,5 +5,6 @@ authors = ["Graham Rushton <gsrushton@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+asmbl-utils = { path = "../../crates/utils" }
 failure = "0.1.6"
 nom = "5"

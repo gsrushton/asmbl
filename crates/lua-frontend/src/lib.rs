@@ -1,4 +1,4 @@
-use std::{fs, path, rc};
+use std::{fs, path};
 
 use asmbl_core as core;
 use asmbl_utils as utils;
@@ -93,11 +93,11 @@ impl Into<core::TargetSpecHandle> for TargetSpecHandle {
 impl rlua::UserData for TargetSpecHandle {}
 
 struct PrerequisiteSpec {
-    inner: core::PrerequisiteSpec,
+    inner: core::PrerequisiteSpec<path::PathBuf>,
 }
 
-impl Into<core::PrerequisiteSpec> for PrerequisiteSpec {
-    fn into(self) -> core::PrerequisiteSpec {
+impl Into<core::PrerequisiteSpec<path::PathBuf>> for PrerequisiteSpec {
+    fn into(self) -> core::PrerequisiteSpec<path::PathBuf> {
         self.inner
     }
 }
@@ -106,7 +106,7 @@ impl<'lua> rlua::FromLua<'lua> for PrerequisiteSpec {
     fn from_lua(v: rlua::Value<'lua>, _: rlua::Context<'lua>) -> rlua::Result<Self> {
         match v {
             rlua::Value::String(s) => Ok(Self {
-                inner: core::PrerequisiteSpec::Named(rc::Rc::from(path::Path::new(s.to_str()?))),
+                inner: core::PrerequisiteSpec::Named(path::PathBuf::from(s.to_str()?), false),
             }),
             rlua::Value::UserData(u) => Ok(Self {
                 inner: core::PrerequisiteSpec::Handle(
@@ -193,39 +193,34 @@ impl<'lua> rlua::FromLua<'lua> for PathBuf {
             }),
             _ => Err(rlua::Error::FromLuaConversionError {
                 from: type_name(&v),
-                to: "TargetsSpec",
-                message: Some(String::from(
-                    "Value must be the fully qualified name of a target \
-                     or a handle returned from the task function",
-                )),
+                to: "Path",
+                message: Some(String::from("Value must be a file path")),
             }),
         }
     }
 }
 
 struct TargetsSpec {
-    inner: core::TargetsSpec,
+    inner: Vec<String>,
 }
 
-impl Into<core::TargetsSpec> for TargetsSpec {
-    fn into(self) -> core::TargetsSpec {
+impl Into<Vec<String>> for TargetsSpec {
+    fn into(self) -> Vec<String> {
         self.inner
     }
 }
 
 impl<'lua> rlua::FromLua<'lua> for TargetsSpec {
-    fn from_lua(v: rlua::Value<'lua>, ctx: rlua::Context<'lua>) -> rlua::Result<Self> {
+    fn from_lua(v: rlua::Value<'lua>, _: rlua::Context<'lua>) -> rlua::Result<Self> {
         match v {
-            rlua::Value::String(_) => Ok(Self {
-                inner: core::TargetsSpec::Single(PathBuf::from_lua(v, ctx)?.into()),
+            rlua::Value::String(s) => Ok(Self {
+                inner: vec![s.to_str()?.to_string()],
             }),
             rlua::Value::Table(t) => Ok(Self {
-                inner: core::TargetsSpec::Multi(
-                    t.sequence_values::<PathBuf>()
-                        .into_iter()
-                        .map(|path| path.map(|path| path.into()))
-                        .collect::<Result<Vec<_>, _>>()?,
-                ),
+                inner: t
+                    .sequence_values::<String>()
+                    .into_iter()
+                    .collect::<Result<Vec<_>, _>>()?,
             }),
             _ => Err(rlua::Error::FromLuaConversionError {
                 from: type_name(&v),
@@ -260,37 +255,6 @@ impl<'lua> rlua::ToLuaMulti<'lua> for TargetSpecHandleIterator {
     }
 }
 
-struct SubUnitSpec {
-    inner: core::SubUnitSpec,
-}
-
-impl<'lua> rlua::FromLua<'lua> for SubUnitSpec {
-    fn from_lua(v: rlua::Value<'lua>, ctx: rlua::Context<'lua>) -> rlua::Result<Self> {
-        match v {
-            rlua::Value::String(_) => Ok(Self {
-                inner: core::SubUnitSpec::Named(PathBuf::from_lua(v, ctx)?.into()),
-            }),
-            rlua::Value::UserData(_) => Ok(Self {
-                inner: core::SubUnitSpec::Target(TargetSpecHandle::from_lua(v, ctx)?.into()),
-            }),
-            _ => Err(rlua::Error::FromLuaConversionError {
-                from: type_name(&v),
-                to: "SubUnitSpec",
-                message: Some(String::from(
-                    "Value must be a path to a file or a handle returned from \
-                     the task function",
-                )),
-            }),
-        }
-    }
-}
-
-impl Into<core::SubUnitSpec> for SubUnitSpec {
-    fn into(self) -> core::SubUnitSpec {
-        self.inner
-    }
-}
-
 impl core::FrontEnd for FrontEnd {
     fn parse_unit<'v, 'p>(
         &self,
@@ -313,7 +277,7 @@ impl core::FrontEnd for FrontEnd {
                             };
 
                             let make_prequisite_specs =
-                                |key| -> Result<Vec<core::PrerequisiteSpec>, _> {
+                                |key| -> Result<Vec<core::PrerequisiteSpec<path::PathBuf>>, _> {
                                     Sequence::new(ctx.clone(), args.get(key)?)
                                         .into_iter()
                                         .map(|r: Result<PrerequisiteSpec, _>| r.map(|p| p.into()))
@@ -394,15 +358,21 @@ impl core::FrontEnd for FrontEnd {
 
                 ctx.globals().set(
                     "sub_unit",
-                    scope.create_function_mut(
-                        |_, sub_unit_spec: SubUnitSpec| -> Result<(), _> {
-                            unit_builder
-                                .borrow_mut()
-                                .add_sub_unit(sub_unit_spec.into())
-                                .map_err(|err| make_lua_error(err))?;
-                            Ok(())
-                        },
-                    )?,
+                    scope.create_function_mut(|_, sub_unit: PathBuf| -> Result<(), _> {
+                        unit_builder
+                            .borrow_mut()
+                            .add_sub_unit(sub_unit.into())
+                            .map_err(|err| make_lua_error(err))?;
+                        Ok(())
+                    })?,
+                )?;
+
+                ctx.globals().set(
+                    "include",
+                    scope.create_function_mut(|_, target: TargetSpecHandle| -> Result<(), _> {
+                        unit_builder.borrow_mut().add_include(target.into());
+                        Ok(())
+                    })?,
                 )?;
 
                 ctx.load(&script)

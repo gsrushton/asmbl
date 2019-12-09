@@ -58,11 +58,10 @@ fn run() -> Result<(), Error> {
 
     let mut engine = core::Engine::new();
     engine.register_frontend("lua", asmbl_lua_frontend::FrontEnd::new());
-    engine.register_frontend("d", asmbl_make_frontend::FrontEnd::new());
 
-    let units = engine.gather_units(&context_dir, &target_prefix)?;
+    let units = engine.gather_units(&context_dir)?;
 
-    let tasks = core::TaskList::new(&target_prefix, units.into_iter().map(|(_, unit)| unit));
+    let tasks = core::TaskList::new(&context_dir, &target_prefix, units)?;
 
     for (_handle, task) in tasks.retain_out_of_date()? {
         let mut cmd = task.prepare()?;

@@ -8,7 +8,6 @@ pub mod io {
         buffered_reader.read_to_string(&mut contents)?;
         Ok(contents)
     }
-
 }
 
 #[cfg(test)]

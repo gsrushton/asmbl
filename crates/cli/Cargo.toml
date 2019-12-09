@@ -7,7 +7,6 @@ edition = "2018"
 [dependencies]
 asmbl-core = { path = "../../crates/core" }
 asmbl-lua-frontend = { path = "../../crates/lua-frontend" }
-asmbl-make-frontend = { path = "../../crates/make-frontend" }
 asmbl-utils = { path = "../../crates/utils" }
 clap = "2.33.0"
 failure = "0.1.6"

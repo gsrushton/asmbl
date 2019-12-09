@@ -22,7 +22,6 @@ version = "0.1.0"
 dependencies = [
  "asmbl-core 0.1.0",
  "asmbl-lua-frontend 0.1.0",
- "asmbl-make-frontend 0.1.0",
  "asmbl-utils 0.1.0",
  "clap 2.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "failure 0.1.6 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -33,6 +32,7 @@ dependencies = [
 name = "asmbl-core"
 version = "0.1.0"
 dependencies = [
+ "asmbl-utils 0.1.0",
  "failure 0.1.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "nom 5.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
@@ -45,16 +45,6 @@ dependencies = [
  "asmbl-utils 0.1.0",
  "failure 0.1.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "rlua 0.16.3 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "asmbl-make-frontend"
-version = "0.1.0"
-dependencies = [
- "asmbl-core 0.1.0",
- "asmbl-utils 0.1.0",
- "failure 0.1.6 (registry+https://github.com/rust-lang/crates.io-index)",
- "nom 5.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]

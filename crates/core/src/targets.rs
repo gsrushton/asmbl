@@ -1,6 +1,6 @@
 use std::{path, rc};
 
-use crate::targets_spec::TargetsSpec;
+use crate::targets_spec::{TargetSpec, TargetsSpec};
 
 #[derive(Clone, Debug)]
 pub enum Targets {
@@ -15,6 +15,27 @@ impl Targets {
             Self::Multi(paths) => TargetIterator::Multi(paths.iter()),
         }
     }
+
+    pub fn try_from(
+        (prefix, input, spec): (path::PathBuf, &Option<rc::Rc<path::Path>>, TargetsSpec),
+    ) -> Result<Self, crate::targets_spec::ResolveError> {
+        let resolve_spec = |prefix: path::PathBuf, spec: TargetSpec| {
+            Ok(rc::Rc::from(
+                spec.resolve(prefix, input.as_ref().map(|i| i.as_ref()))?,
+            ))
+        };
+
+        Ok(match spec {
+            TargetsSpec::Single(spec) => Self::Single(resolve_spec(prefix, spec)?),
+            TargetsSpec::Multi(specs) => Self::Multi(
+                specs
+                    .into_iter()
+                    // FIXME The first/last one doesn't need to be a clone
+                    .map(|spec| resolve_spec(prefix.clone(), spec))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+        })
+    }
 }
 
 impl std::ops::Index<usize> for Targets {
@@ -25,20 +46,6 @@ impl std::ops::Index<usize> for Targets {
             Self::Single(path) if index == 0 => path,
             Self::Multi(paths) => &paths[index],
             _ => panic!(),
-        }
-    }
-}
-
-impl From<(&path::Path, TargetsSpec)> for Targets {
-    fn from((prefix, spec): (&path::Path, TargetsSpec)) -> Self {
-        match spec {
-            TargetsSpec::Single(path) => Self::Single(rc::Rc::from(prefix.join(path))),
-            TargetsSpec::Multi(paths) => Self::Multi(
-                paths
-                    .into_iter()
-                    .map(|path| rc::Rc::from(prefix.join(path)))
-                    .collect(),
-            ),
         }
     }
 }

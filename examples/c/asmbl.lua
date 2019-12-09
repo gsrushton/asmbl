@@ -1,8 +1,8 @@
 
 obj, deps = task {
   targets = {
-    "main.o",
-    "main.d"
+    "%f.o",
+    "%f.d"
   },
   consumes = "src/main.c",
   env = {
@@ -11,7 +11,7 @@ obj, deps = task {
   run = "gcc -o $@[0] -c $< -Iinclude -MMD -MP -MT $@[0] -MF $@[1]"
 }
 
-sub_unit(deps)
+include(deps)
 
 bin = task {
   target = "example",

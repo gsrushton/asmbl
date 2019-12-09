@@ -58,20 +58,20 @@ fn rules(i: &str) -> nom::IResult<&str, Vec<Rule>> {
 }
 
 #[derive(Debug, failure::Fail)]
-pub enum ParseError {
+pub enum Error {
     #[fail(display = "Incomplete")]
     Incomplete,
     #[fail(display = "{}", 0)]
     Failure(String),
 }
 
-pub fn parse(i: &str) -> Result<Vec<Rule>, ParseError> {
+pub fn parse(i: &str) -> Result<Vec<Rule>, Error> {
     match rules(i) {
         Ok((_, rules)) => Ok(rules),
         Err(err) => Err(match err {
-            nom::Err::Incomplete(_) => ParseError::Incomplete,
+            nom::Err::Incomplete(_) => Error::Incomplete,
             nom::Err::Error((_, kind)) | nom::Err::Failure((_, kind)) => {
-                ParseError::Failure(kind.description().to_string())
+                Error::Failure(kind.description().to_string())
             }
         }),
     }

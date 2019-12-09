@@ -13,7 +13,7 @@ _, bin, deps = task {
   run = "cargo build --release --manifest-path $< --target-dir $@[0]"
 }
 
-sub_unit(deps)
+include(deps)
 
 task {
   target = "asmbl",

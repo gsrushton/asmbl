@@ -1,8 +1,71 @@
 use std::path;
 
+pub struct TargetSpec {
+    path: String,
+}
+
+#[derive(Debug, failure::Fail)]
+pub enum ResolveError {
+    #[fail(display = "Invalid marker character.")]
+    InvalidMarkerCharacter,
+    #[fail(display = "Missing marker character.")]
+    MissingMarkerCharacter,
+    #[fail(display = "No input")]
+    NoInput,
+    #[fail(display = "No file-stem")]
+    NoFileStem,
+    #[fail(display = "Non unicode input path")]
+    NonUnicodeInputPath,
+}
+
+impl TargetSpec {
+    pub fn resolve(
+        self,
+        mut prefix: path::PathBuf,
+        input: Option<&path::Path>,
+    ) -> Result<path::PathBuf, ResolveError> {
+        let mut path = String::with_capacity(
+            self.path.len() + input.map(|i| i.as_os_str().len()).unwrap_or(0),
+        );
+
+        let mut it = self.path.chars();
+        while let Some(ch) = it.next() {
+            if ch == '%' {
+                match it.next() {
+                    Some('%') => path.push('%'),
+                    Some('f') => path.push_str(
+                        input
+                            .ok_or(ResolveError::NoInput)?
+                            .file_stem()
+                            .ok_or(ResolveError::NoFileStem)?
+                            .to_str()
+                            .ok_or(ResolveError::NonUnicodeInputPath)?,
+                    ),
+                    None => return Err(ResolveError::MissingMarkerCharacter),
+                    _ => return Err(ResolveError::InvalidMarkerCharacter),
+                }
+            } else {
+                path.push(ch);
+            }
+        }
+
+        prefix.push(path::Path::new(&path));
+
+        Ok(prefix)
+    }
+}
+
+impl From<String> for TargetSpec {
+    fn from(path: String) -> Self {
+        // TODO would be nice to check markers here...
+
+        Self { path }
+    }
+}
+
 pub enum TargetsSpec {
-    Single(path::PathBuf),
-    Multi(Vec<path::PathBuf>),
+    Single(TargetSpec),
+    Multi(Vec<TargetSpec>),
 }
 
 impl TargetsSpec {
@@ -12,25 +75,25 @@ impl TargetsSpec {
             Self::Multi(targets) => targets.len(),
         }
     }
+}
 
-    pub fn map<F, E>(self, mut f: F) -> Result<Self, E>
-    where
-        F: FnMut(path::PathBuf) -> Result<path::PathBuf, E>,
-    {
-        Ok(match self {
-            Self::Single(path) => Self::Single(f(path)?),
-            Self::Multi(paths) => Self::Multi(
+impl From<Vec<String>> for TargetsSpec {
+    fn from(mut paths: Vec<String>) -> Self {
+        if paths.len() == 1 {
+            Self::Single(TargetSpec::from(paths.pop().unwrap()))
+        } else {
+            Self::Multi(
                 paths
                     .into_iter()
-                    .map(|path| f(path))
-                    .collect::<Result<Vec<_>, E>>()?,
-            ),
-        })
+                    .map(|path| TargetSpec::from(path))
+                    .collect(),
+            )
+        }
     }
 }
 
 impl std::ops::Index<usize> for TargetsSpec {
-    type Output = path::Path;
+    type Output = TargetSpec;
 
     fn index(&self, index: usize) -> &Self::Output {
         match self {
