@@ -80,8 +80,8 @@ pub enum NewTaskListError {
     RelativiseError(#[fail(cause)] relativiser::Error),
     #[fail(display = "Failed to parse make file")]
     MakeParseError(#[fail(cause)] make::ParserError),
-    #[fail(display = "IO Error")]
-    IOError(#[fail(cause)] std::io::Error)
+    #[fail(display = "IO Error: {}", 0)]
+    IOError(String, #[fail(cause)] std::io::Error),
 }
 
 impl From<targets_spec::ResolveError> for NewTaskListError {
@@ -102,9 +102,9 @@ impl From<make::ParserError> for NewTaskListError {
     }
 }
 
-impl From<std::io::Error> for NewTaskListError {
-    fn from(err: std::io::Error) -> Self {
-        Self::IOError(err)
+impl NewTaskListError {
+    fn new(path: &path::Path, err: std::io::Error) -> Self {
+        Self::IOError(path.to_string_lossy().to_string(), err)
     }
 }
 
@@ -122,26 +122,30 @@ impl TaskList {
         // Extract the list of tasks from each unit,
         // flattening them into one big list.
 
-        let (cakes, includes): (Vec<_>, Vec<_>) = units
+        let (task_sets, includes): (Vec<_>, Vec<_>) = units
             .into_iter()
             .map(|(dir, unit)| (dir, unit.decompose()))
-            .scan(0, |count, (dir, (task_specs, includes))| {
+            .scan(0, |count, (dir, (task_sets, includes))| {
                 let offset = *count;
-                *count += task_specs.len();
-                let task_specs = task_specs
+
+                let task_sets = task_sets
                     .into_iter()
-                    .map(move |(targets_spec, task_spec)| {
-                        (Some(targets_spec), task_spec.resolve(offset))
+                    .map(move |task_set| {
+                        task_set.resolve(offset)
                     });
+
                 let includes = includes
                     .into_iter()
                     .map(move |include| include.resolve(offset));
 
-                Some((task_specs, (dir, includes)))
+                *count += task_sets.len();
+
+                Some((task_sets, (dir, includes)))
             })
             .unzip();
 
-        let (mut targets_specs, mut task_specs): (Vec<_>, Vec<_>) = cakes.into_iter().flatten().unzip();
+        let (mut targets_specs, mut task_specs): (Vec<_>, Vec<_>) =
+            cakes.into_iter().flatten().unzip();
 
         let mut targets: Vec<Option<Targets>> = vec![None; targets_specs.len()];
 
@@ -208,7 +212,7 @@ impl TaskList {
             .collect();
 
         // Account for any extra prerequisites.
-        let get_target = |handle: TargetSpecHandle| {
+        let get_target_path = |handle: TargetSpecHandle| {
             let target = targets[handle.task_index].as_ref().unwrap();
             &target[handle.target_index]
         };
@@ -216,20 +220,27 @@ impl TaskList {
         for (dir, includes) in includes.into_iter() {
             let relativiser = relativiser::Relativiser::new(dir);
             for include in includes {
-                let content = asmbl_utils::io::read_file(fs::File::open(get_target(include))?)?;
+                let target_path = get_target_path(include);
+                if let Ok(file) = fs::File::open(target_path) {
+                    let content = asmbl_utils::io::read_file(file)
+                        .map_err(|err| NewTaskListError::new(target_path, err))?;
 
-                for (target, prerequisite) in make::cake(&content)? {
+                    for (target, prerequisite) in make::cake(&content)? {
+                        let target = relativiser.relativise(&context, path::Path::new(target))?;
+                        let prerequisite =
+                            relativiser.relativise(&context, path::Path::new(prerequisite))?;
 
-                    let target = relativiser.relativise(&context, path::Path::new(target))?;
-                    let prerequisite = relativiser.relativise(&context, path::Path::new(prerequisite))?;
-
-                    match target_lut.get(&rc::Rc::from(target)) {
-                        Some((task_index, _)) => {
-                            task_specs[*task_index]
-                                .depends_on
-                                .push(PrerequisiteSpec::Named(rc::Rc::from(prerequisite), true));
+                        match target_lut.get(&rc::Rc::from(target)) {
+                            Some((task_index, _)) => {
+                                task_specs[*task_index]
+                                    .depends_on
+                                    .push(PrerequisiteSpec::Named(
+                                        rc::Rc::from(prerequisite),
+                                        true,
+                                    ));
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
             }
@@ -241,26 +252,27 @@ impl TaskList {
             .into_iter()
             .enumerate()
             .map(|(s, task_spec)| {
-                let mut resolve_prequisite =
-                    |prerequisite: PrerequisiteSpec<rc::Rc<path::Path>>| {
-                        let (prerequisite, path) = match prerequisite {
-                            PrerequisiteSpec::Handle(handle) => (
-                                Prerequisite::Handle(TaskHandle::new(handle.task_index)),
-                                get_target(handle).clone(),
+                let mut resolve_prequisite = |prerequisite: PrerequisiteSpec<
+                    rc::Rc<path::Path>,
+                >| {
+                    let (prerequisite, path) = match prerequisite {
+                        PrerequisiteSpec::Handle(handle) => (
+                            Prerequisite::Handle(TaskHandle::new(handle.task_index)),
+                            get_target_path(handle).clone(),
+                        ),
+                        PrerequisiteSpec::Named(name, optional) => match target_lut.get(&name) {
+                            Some((task_index, target_index)) => (
+                                Prerequisite::Handle(TaskHandle::new(*task_index)),
+                                targets[*task_index].as_ref().unwrap()[*target_index].clone(),
                             ),
-                            PrerequisiteSpec::Named(name, optional) => match target_lut.get(&name) {
-                                Some((task_index, target_index)) => (
-                                    Prerequisite::Handle(TaskHandle::new(*task_index)),
-                                    targets[*task_index].as_ref().unwrap()[*target_index].clone(),
-                                ),
-                                None => (Prerequisite::Named(name.clone(), optional), name),
-                            },
-                        };
-                        if let Prerequisite::Handle(handle) = prerequisite {
-                            downstreams[handle.index].push(TaskHandle::new(s));
-                        };
-                        (prerequisite, path)
+                            None => (Prerequisite::Named(name.clone(), optional), name),
+                        },
                     };
+                    if let Prerequisite::Handle(handle) = prerequisite {
+                        downstreams[handle.index].push(TaskHandle::new(s));
+                    };
+                    (prerequisite, path)
+                };
 
                 let (mut upstream, inputs): (Vec<_>, Vec<_>) = task_spec
                     .consumes
@@ -364,21 +376,19 @@ impl TaskList {
                     let upstream_mod_time = task
                         .upstream
                         .iter()
-                        .filter_map(|prerequisite| {
-                            match prerequisite {
-                                Prerequisite::Named(file, optional) => match fs::metadata(&file) {
-                                    Ok(metadata) => {
-                                        Some(metadata.modified()
-                                        .map_err(|err| {
-                                            CakeError::NoLastModifiedTime(file.to_path_buf(), err)
-                                        }))
-                                    },
-                                    Err(_) if *optional => None,
-                                    Err(err) => Some(Err(CakeError::PrerequisiteMissing(file.to_path_buf(), err)))
-                                },
-                                Prerequisite::Handle(handle) => {
-                                    modification_times[handle.index].map(|time| Ok(time))
-                                }
+                        .filter_map(|prerequisite| match prerequisite {
+                            Prerequisite::Named(file, optional) => match fs::metadata(&file) {
+                                Ok(metadata) => Some(metadata.modified().map_err(|err| {
+                                    CakeError::NoLastModifiedTime(file.to_path_buf(), err)
+                                })),
+                                Err(_) if *optional => None,
+                                Err(err) => Some(Err(CakeError::PrerequisiteMissing(
+                                    file.to_path_buf(),
+                                    err,
+                                ))),
+                            },
+                            Prerequisite::Handle(handle) => {
+                                modification_times[handle.index].map(|time| Ok(time))
                             }
                         })
                         .try_fold(None, |r, t| -> Result<Option<SystemTime>, CakeError> {
@@ -540,7 +550,7 @@ impl Engine {
 
     pub fn gather_units(
         &self,
-        dir: &path::Path
+        dir: &path::Path,
     ) -> Result<Vec<(path::PathBuf, Unit)>, GatherUnitsError> {
         for (ext, frontend) in self.frontends.iter() {
             let file = dir.join("asmbl").with_extension(ext);

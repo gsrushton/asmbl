@@ -5,6 +5,7 @@ use crate::targets_spec::TargetsSpec;
 
 use std::{path, rc};
 
+#[derive(Clone)]
 pub enum PrerequisiteSpec<Path> {
     Named(Path, bool),
     Handle(TargetSpecHandle),
@@ -13,7 +14,9 @@ pub enum PrerequisiteSpec<Path> {
 impl PrerequisiteSpec<path::PathBuf> {
     pub fn resolve(self, offset: usize) -> PrerequisiteSpec<rc::Rc<path::Path>> {
         match self {
-            Self::Named(path, optional) => PrerequisiteSpec::Named(rc::Rc::from(path) as rc::Rc<path::Path>, optional),
+            Self::Named(path, optional) => {
+                PrerequisiteSpec::Named(rc::Rc::from(path) as rc::Rc<path::Path>, optional)
+            }
             Self::Handle(handle) => PrerequisiteSpec::Handle(handle.resolve(offset)),
         }
     }
@@ -75,8 +78,29 @@ pub struct TaskSpec<Path> {
     pub consumes: Vec<PrerequisiteSpec<Path>>,
     pub depends_on: Vec<PrerequisiteSpec<Path>>,
     pub not_before: Vec<PrerequisiteSpec<Path>>,
+    pub aggregate: bool,
     pub env: Vec<EnvSpec>,
     pub recipe: Recipe,
+}
+
+impl<Path> TaskSpec<Path> {
+    pub fn decompose(
+        self,
+    ) -> (
+        Vec<PrerequisiteSpec<Path>>,
+        Vec<PrerequisiteSpec<Path>>,
+        Vec<PrerequisiteSpec<Path>>,
+        Vec<EnvSpec>,
+        Recipe,
+    ) {
+        (
+            self.consumes,
+            self.depends_on,
+            self.not_before,
+            self.env,
+            self.recipe,
+        )
+    }
 }
 
 impl TaskSpec<path::PathBuf> {
@@ -84,6 +108,7 @@ impl TaskSpec<path::PathBuf> {
         consumes: Vec<PrerequisiteSpec<path::PathBuf>>,
         depends_on: Vec<PrerequisiteSpec<path::PathBuf>>,
         not_before: Vec<PrerequisiteSpec<path::PathBuf>>,
+        aggregate: bool,
         env: Vec<EnvSpec>,
         recipe: Recipe,
     ) -> Self {
@@ -91,6 +116,7 @@ impl TaskSpec<path::PathBuf> {
             consumes,
             depends_on,
             not_before,
+            aggregate,
             env,
             recipe: recipe,
         }
@@ -107,8 +133,37 @@ impl TaskSpec<path::PathBuf> {
             consumes: resolve_prequisites(self.consumes),
             depends_on: resolve_prequisites(self.depends_on),
             not_before: resolve_prequisites(self.not_before),
+            aggregate: self.aggregate,
             env: self.env,
             recipe: self.recipe,
+        }
+    }
+}
+
+pub struct TaskSet<Path> {
+    tasks: Vec<(TargetsSpec, TaskSpec<Path>)>,
+}
+
+impl<Path> TaskSet<Path> {
+    pub fn single(targets: TargetsSpec, task_spec: TaskSpec<Path>) -> Self {
+        Self {
+            tasks: vec![(targets, task_spec)]
+        }
+    }
+}
+
+impl TaskSet<path::PathBuf> {
+    pub fn resolve(self, offset: usize) -> TaskSet<rc::Rc<path::Path>> {
+        self.tasks.into_iter().map(|(targets, task_spec)| (targets, task_spec.resolve(offset))).collect()
+    }
+}
+
+impl<Path> std::iter::FromIterator<(TargetsSpec, TaskSpec<Path>)> for TaskSet<Path> {
+    fn from_iter<T>(iter: T) -> Self
+        where T: IntoIterator<Item = (TargetsSpec, TaskSpec<Path>)>
+    {
+        Self {
+            tasks: iter.into_iter().collect()
         }
     }
 }
@@ -134,6 +189,7 @@ impl Unit {
         consumes: Vec<PrerequisiteSpec<path::PathBuf>>,
         depends_on: Vec<PrerequisiteSpec<path::PathBuf>>,
         not_before: Vec<PrerequisiteSpec<path::PathBuf>>,
+        aggregate: bool,
         env: Vec<EnvSpec>,
         recipe: Recipe,
     ) -> TargetSpecHandleIterator {
@@ -141,7 +197,7 @@ impl Unit {
         let task_index = self.tasks.len();
         self.tasks.push((
             targets,
-            TaskSpec::new(consumes, depends_on, not_before, env, recipe),
+            TaskSpec::new(consumes, depends_on, not_before, aggregate, env, recipe),
         ));
         TargetSpecHandleIterator::new(task_index, target_count)
     }
@@ -157,10 +213,30 @@ impl Unit {
     pub fn decompose(
         self,
     ) -> (
-        Vec<(TargetsSpec, TaskSpec<path::PathBuf>)>,
+        Vec<TaskSet<path::PathBuf>>,
         Vec<TargetSpecHandle>,
     ) {
-        (self.tasks, self.includes)
+        let task_sets = self.tasks.into_iter().map(|(targets, task)| {
+            if task.aggregate || task.consumes.len() <= 1 {
+                TaskSet::single(targets, task)
+            } else {
+                let (consumes, depends_on, not_before, env, recipe) = task.decompose();
+                consumes.into_iter().map(|input| {
+                    (
+                        targets.clone(),
+                        TaskSpec::new(
+                            vec![input],
+                            depends_on.clone(),
+                            not_before.clone(),
+                            true,
+                            env.clone(),
+                            recipe.clone(),
+                        ),
+                    )
+                }).collect()
+            }
+        });
+        (task_sets.collect(), self.includes)
     }
 }
 
@@ -199,6 +275,7 @@ impl<'p, 'v> UnitBuilder<'p, 'v> {
         consumes: Vec<PrerequisiteSpec<path::PathBuf>>,
         depends_on: Vec<PrerequisiteSpec<path::PathBuf>>,
         not_before: Vec<PrerequisiteSpec<path::PathBuf>>,
+        aggregate: bool,
         env: Vec<EnvSpec>,
         recipe: Recipe,
     ) -> Result<TargetSpecHandleIterator, AddTaskError> {
@@ -245,6 +322,7 @@ impl<'p, 'v> UnitBuilder<'p, 'v> {
             consumes,
             depends_on,
             not_before,
+            aggregate,
             env,
             recipe,
         ))

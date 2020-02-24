@@ -4,11 +4,11 @@ obj, deps = task {
     "%f.o",
     "%f.d"
   },
-  consumes = "src/main.c",
+  consumes = {"src/main.c", "src/name.c"},
   env = {
     "PATH"
   },
-  run = "gcc -o $@[0] -c $< -Iinclude -MMD -MP -MT $@[0] -MF $@[1]"
+  run = "gcc -o $@[0] -c $< -Iinclude -MMD -MT $@[0] -MF $@[1]"
 }
 
 include(deps)

@@ -1,5 +1,6 @@
 use std::path;
 
+#[derive(Clone)]
 pub struct TargetSpec {
     path: String,
 }
@@ -63,6 +64,7 @@ impl From<String> for TargetSpec {
     }
 }
 
+#[derive(Clone)]
 pub enum TargetsSpec {
     Single(TargetSpec),
     Multi(Vec<TargetSpec>),

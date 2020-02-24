@@ -1,3 +1,3 @@
 #pragma once
 
-#define NAME "WORLD"
+char const* get_name();

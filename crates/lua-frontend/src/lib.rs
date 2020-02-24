@@ -347,6 +347,7 @@ impl core::FrontEnd for FrontEnd {
                                     make_prequisite_specs("consumes")?,
                                     make_prequisite_specs("depends_on")?,
                                     make_prequisite_specs("not_before")?,
+                                    args.get::<_, Option<bool>>("aggregate")?.unwrap_or(false),
                                     env,
                                     run,
                                 )

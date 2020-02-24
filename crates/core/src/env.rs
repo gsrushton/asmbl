@@ -1,10 +1,10 @@
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum EnvSpecValue {
     INHERIT,
     DEFINE(String),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct EnvSpec {
     name: String,
     value: EnvSpecValue,

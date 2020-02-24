@@ -5,7 +5,7 @@ use crate::targets::Targets;
 
 mod parser;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Variable {
     Targets,
     Target(usize),
@@ -14,7 +14,7 @@ pub enum Variable {
     Other(String),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArgElement {
     Str(String),
     Var(Variable),
@@ -59,7 +59,7 @@ impl From<parser::ParseElementsError> for RecipeParseError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Recipe {
     elements: Vec<ArgElement>,
 }
